@@ -1,0 +1,41 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "tournament-app",
+  "main": "src/worker/index.ts",
+  "compatibility_date": "2026-09-01",
+
+  // Builds the web app into dist/client before every `wrangler dev` / `wrangler deploy`.
+  "build": {
+    "command": "npm run build:client"
+  },
+
+  // The web app is served as static assets; only /api/* runs the Worker.
+  "assets": {
+    "directory": "./dist/client",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*"]
+  },
+
+  // Latest parsed tournament JSON. Written only when the sheet content changes.
+  "kv_namespaces": [
+    {
+      "binding": "CACHE",
+      "id": "d1016fdad5b746eba5487d8e3d985849"
+    }
+  ],
+
+  // Pull the Google Sheet once a minute.
+  "triggers": {
+    "crons": ["* * * * *"]
+  },
+
+  "observability": {
+    "enabled": true
+  }
+
+  // Secrets (set in the Cloudflare dashboard or with `wrangler secret put`):
+  //   SHEET_ID        The id in the sheet URL: docs.google.com/spreadsheets/d/<SHEET_ID>/edit
+  //   GOOGLE_API_KEY  Google Cloud API key restricted to the Google Sheets API (recommended)
+  //   SHEET_TABS      Optional, instead of an API key: "Canada_Rankings=0,Open_Singles=123,..." (tab=gid pairs)
+}
