@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import snapshot from '../src/data/snapshot.grids.json';
+import snapshot from './fixtures/workbook-2026-10-05.grids.json';
+import latest from '../src/data/snapshot.grids.json';
 import { buildTournament, fingerprint } from '../src/shared/parse';
 import type { Cell, Workbook } from '../src/shared/types';
 import { parseCsv } from '../src/worker/csv';
-import { parseTabs } from '../src/worker/sheets';
+import { parseTabs, tabsFromHtml } from '../src/worker/sheets';
+import { parseSets } from '../src/shared/parse';
 
 const wb = snapshot as unknown as Workbook;
 const t = buildTournament(wb, { kind: 'snapshot', label: 'test' }, new Date('2026-10-05T00:00:00Z'));
@@ -116,5 +118,52 @@ describe('CSV source', () => {
       { title: 'Open_Singles', gid: '123' },
       { title: 'Beginners', gid: '9' },
     ]);
+  });
+});
+
+describe('2026-10-07 workbook (match results, round-robin, empty tabs)', () => {
+  const t2 = buildTournament(latest as unknown as Workbook, { kind: 'snapshot', label: 'test' });
+  const e2 = (id: string) => t2.events.find((e) => e.id === id)!;
+
+  it('skips event tabs with no registered players', () => {
+    expect(t2.events.map((e) => e.id)).toEqual(['open-singles', 'active-4-life', 'beginners']);
+  });
+
+  it('reads group match results, including sets the sheet turned into dates', () => {
+    const g1 = e2('open-singles').groups[0];
+    expect(g1.matches).toHaveLength(6);
+    expect(g1.matches[0]).toEqual({ order: 1, a: 'Bekele Biruk', b: 'Palad Dilbert', aSets: 3, bSets: 2, winner: 'Bekele Biruk' });
+    expect(g1.matches[3]).toMatchObject({ a: 'Saindon Laurie', b: 'Palad Dilbert', aSets: 3, bSets: 0 });
+  });
+
+  it('reads round-robin brackets', () => {
+    const B = e2('active-4-life').brackets[1];
+    expect(B).toMatchObject({ id: 'B', label: 'Consolation', format: 'roundrobin', players: 5, champion: 'Caguioa Czar' });
+    expect(B.table!.matches).toHaveLength(10);
+    const pending = e2('beginners').brackets[1];
+    expect(pending.champion).toBeNull();
+    expect(pending.table!.matches.every((m) => m.aSets === null)).toBe(true);
+  });
+
+  it('strips "Bracket" from labels and keeps knockout brackets intact', () => {
+    expect(e2('open-singles').brackets.map((b) => [b.id, b.label, b.format, b.champion])).toEqual([
+      ['A', 'Championship', 'knockout', 'Lehmann Matthew'],
+      ['B', 'Consolation', 'knockout', 'Liu Rhea'],
+      ['C', 'Division C', 'knockout', null],
+    ]);
+  });
+
+  it('parses set scores in every form', () => {
+    expect(parseSets('3-1')).toEqual([3, 1]);
+    expect(parseSets('2/3/2026')).toEqual([2, 3]);
+    expect(parseSets('2026-03-01')).toEqual([3, 1]);
+    expect(parseSets(46082)).toEqual([3, 1]);
+    expect(parseSets(null)).toBeNull();
+  });
+
+  it('finds tabs in the sheet HTML view', () => {
+    const html = '<ul id="sheet-menu"><li id="sheet-button-0"><a href="#">Canada_Rankings</a></li><li id="sheet-button-1769566559"><a href="#">Active-4-Life</a></li></ul>';
+    expect(tabsFromHtml(html)).toEqual([{ title: 'Canada_Rankings', gid: '0' }, { title: 'Active-4-Life', gid: '1769566559' }]);
+    expect(tabsFromHtml('items.push({name: "Open_Singles", pageUrl: "x", gid: "1255341360",});')).toEqual([{ title: 'Open_Singles', gid: '1255341360' }]);
   });
 });

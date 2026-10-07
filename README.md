@@ -28,14 +28,14 @@ The sheet must be shared as **Anyone with the link → Viewer**. Then add these 
 | Secret | Value |
 | --- | --- |
 | `SHEET_ID` | The id in the sheet URL: `docs.google.com/spreadsheets/d/<SHEET_ID>/edit` |
-| `GOOGLE_API_KEY` | A Google Cloud API key restricted to the **Google Sheets API** (recommended; new tabs are picked up automatically) |
-| `SHEET_TABS` | *Alternative to the API key:* `Canada_Rankings=0,Open_Singles=123,...` (tab name = `gid` from each tab's URL) |
+| `SHEET_TABS` | *Optional backup:* `Canada_Rankings=0,Open_Singles=123,...` (tab name = `gid` from each tab's URL). Tabs are normally discovered automatically. |
+| `GOOGLE_API_KEY` | *Optional:* a Google Cloud API key for the Sheets API. Not needed; without it the app reads the sheet's free public CSV export. |
 
-To create the API key:
-1. Go to [console.cloud.google.com](https://console.cloud.google.com) and create a project.
-2. Go to **APIs & Services → Library**, open **Google Sheets API** and click **Enable**.
-3. Go to **Credentials → Create credentials → API key**.
-4. Edit the key and set **API restrictions** to Google Sheets API.
+### Sheet rules the app follows
+
+- Tab 1 is the ranking list. Every other tab is an event; tabs with no registered players are not published.
+- Group tables can carry `Match Order` ("Seed 1 vs Seed 3") and `Sets (P1-P2)` ("3-1") columns; results show under each group. Tip: format the Sets columns as **Plain text** so Sheets doesn't turn "3-1" into a date (dates are read back as month-day, so they still work).
+- Brackets are `GROUP X - Name (...)` blocks. A title containing `(Round-Robin)` is shown as a standings table plus results instead of a knockout tree.
 
 `/api/health` shows which source is active and the last sync error, if any.
 

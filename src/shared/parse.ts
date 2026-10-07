@@ -4,6 +4,7 @@ import type {
   EventData,
   Grid,
   Group,
+  GroupMatch,
   GroupPlayer,
   Match,
   PlayerInfo,
@@ -65,6 +66,56 @@ export function isoDate(v: Cell): string | null {
   if (Number.isNaN(t)) return null;
   const d = new Date(t);
   return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`;
+}
+
+/**
+ * Reads a "Sets (P1-P2)" cell. Spreadsheets often turn "3-1" into a date
+ * (March 1), so dates are read back as month-day.
+ */
+export function parseSets(v: Cell): [number, number] | null {
+  if (v == null || typeof v === 'boolean') return null;
+  if (typeof v === 'number') {
+    if (v > 20000 && v < 100000) {
+      const d = new Date(Math.round((v - 25569) * 86400000));
+      return [d.getUTCMonth() + 1, d.getUTCDate()];
+    }
+    return null;
+  }
+  const s = v.trim();
+  let m = /^(\d{1,2})\s*[-–:]\s*(\d{1,2})$/.exec(s);
+  if (m) return [Number(m[1]), Number(m[2])];
+  m = /^(\d{4})-(\d{1,2})-(\d{1,2})/.exec(s);
+  if (m) return [Number(m[2]), Number(m[3])];
+  m = /^(\d{1,2})\/(\d{1,2})(?:\/\d{2,4})?$/.exec(s);
+  if (m) return [Number(m[1]), Number(m[2])];
+  return null;
+}
+
+const ORDER_RE = /seed\s*(\d+)\s*(?:vs\.?|v)\s*seed\s*(\d+)/i;
+
+/** Reads "Seed 1 vs Seed 3" rows downward from `start` until the column runs out. */
+function readMatches(
+  g: Grid,
+  start: number,
+  orderCol: number,
+  setsCol: number,
+  bySeed: Map<number, string>,
+): GroupMatch[] {
+  const out: GroupMatch[] = [];
+  if (orderCol < 0) return out;
+  for (let r = start; r < g.length; r += 1) {
+    const m = ORDER_RE.exec(text(at(g, r, orderCol)));
+    if (!m) break;
+    const a = bySeed.get(Number(m[1]));
+    const b = bySeed.get(Number(m[2]));
+    if (!a || !b) continue;
+    const sets = setsCol >= 0 ? parseSets(at(g, r, setsCol)) : null;
+    const [aSets, bSets] = sets ?? [null, null];
+    let winner: string | null = null;
+    if (aSets != null && bSets != null && aSets !== bSets && Math.max(aSets, bSets) >= 3) winner = aSets > bSets ? a : b;
+    out.push({ order: out.length + 1, a, b, aSets, bSets, winner });
+  }
+  return out;
 }
 
 const norm = (s: string) => s.toLowerCase().replace(/[\s_\-]+/g, '');
@@ -211,12 +262,18 @@ function parseDraw(g: Grid, s: number): Group[] {
     losses: idx('Losses', 8),
     rank: idx('Rank', 9),
   };
+  const orderCol = headerIndex(h, 'Match Order', s + 1, s + 14);
+  const setsCol = headerIndex(h, 'Sets (P1-P2)', s + 1, s + 14) >= 0 ? headerIndex(h, 'Sets (P1-P2)', s + 1, s + 14) : headerIndex(h, 'Sets', s + 1, s + 14);
   const groups = new Map<string, GroupPlayer[]>();
+  const firstRow = new Map<string, number>();
   for (let r = 1; r < g.length; r += 1) {
     const gname = text(at(g, r, s));
     const name = text(at(g, r, c.name));
     if (!gname || !name) continue;
-    if (!groups.has(gname)) groups.set(gname, []);
+    if (!groups.has(gname)) {
+      groups.set(gname, []);
+      firstRow.set(gname, r);
+    }
     groups.get(gname)!.push({
       name,
       seed: num(at(g, r, c.seed)),
@@ -229,11 +286,16 @@ function parseDraw(g: Grid, s: number): Group[] {
       rank: num(at(g, r, c.rank)) ?? 0,
     });
   }
-  const list: Group[] = [...groups.entries()].map(([name, players]) => ({
-    name,
-    label: name.replace(/^group\s*/i, '') || name,
-    players: rankPlayers(players),
-  }));
+  const list: Group[] = [...groups.entries()].map(([name, players]) => {
+    const bySeed = new Map<number, string>();
+    players.forEach((p) => p.groupSeed != null && bySeed.set(p.groupSeed, p.name));
+    return {
+      name,
+      label: name.replace(/^group\s*/i, '') || name,
+      players: rankPlayers(players),
+      matches: readMatches(g, firstRow.get(name)!, orderCol, setsCol, bySeed),
+    };
+  });
   const key = (gr: Group) => {
     const n = Number(gr.label);
     return Number.isFinite(n) ? n : Number.MAX_SAFE_INTEGER;
@@ -300,7 +362,13 @@ function parseBrackets(g: Grid, bc: number, warn: (m: string) => void, tab: stri
     const rest = m[2];
     const preliminary = /preliminary\s+projection/i.test(rest);
     const sizeMatch = /\((\d+)\s*players?\s*\/\s*(\d+)\s*-?\s*player\s*bracket\)/i.exec(rest);
-    const label = rest.replace(/\(.*$/, '').trim() || `Bracket ${id}`;
+    const label = rest.replace(/\(.*$/, '').replace(/\s+bracket\s*$/i, '').trim() || `Bracket ${id}`;
+    if (/round[\s-]*robin/i.test(rest)) {
+      const rr = parseRoundRobin(g, tr, bc, id, label, preliminary);
+      if (rr) out.push(rr);
+      else warn(`${tab}: round-robin bracket ${id} has no players listed`);
+      continue;
+    }
 
     const hr = tr + 1;
     const headers: string[] = [];
@@ -340,11 +408,66 @@ function parseBrackets(g: Grid, bc: number, warn: (m: string) => void, tab: stri
     const champion = hasChampion ? entry(R, 0).name : null;
     const players = sizeMatch ? Number(sizeMatch[1]) : firstRound.filter((e) => e.name).length;
     out.push({
-      bracket: { id, label, size, players, preliminary, champion, rounds },
+      bracket: { id, label, format: 'knockout', size, players, preliminary, champion, rounds },
       firstRound,
     });
   }
   return out;
+}
+
+function parseRoundRobin(g: Grid, tr: number, bc: number, id: string, label: string, preliminary: boolean): ParsedBracket | null {
+  let hr = -1;
+  for (let r = tr + 1; r <= tr + 4 && r < g.length; r += 1) {
+    if (headerIndex(g[r], 'Seed', bc, bc + 3) >= 0) {
+      hr = r;
+      break;
+    }
+  }
+  if (hr < 0) return null;
+  const h = g[hr];
+  const col = (name: string) => headerIndex(h, name, bc + 1, bc + 12);
+  const c = { seed: col('Seed'), wins: col('Wins'), losses: col('Losses'), rank: col('Rank'), order: col('Match Order') };
+  const setsCol = col('Sets (P1-P2)') >= 0 ? col('Sets (P1-P2)') : col('Sets');
+  const entries: Entry[] = [];
+  const players: GroupPlayer[] = [];
+  for (let r = hr + 1; r < g.length; r += 1) {
+    const e = readEntry(g, r, bc);
+    if (!e.name) break;
+    entries.push(e);
+    players.push({
+      name: e.name,
+      seed: null,
+      groupSeed: c.seed >= 0 ? num(at(g, r, c.seed)) : players.length + 1,
+      province: '',
+      gender: '',
+      rating: null,
+      wins: c.wins >= 0 ? num(at(g, r, c.wins)) ?? 0 : 0,
+      losses: c.losses >= 0 ? num(at(g, r, c.losses)) ?? 0 : 0,
+      rank: c.rank >= 0 ? num(at(g, r, c.rank)) ?? 0 : 0,
+    });
+  }
+  if (!players.length) return null;
+  const bySeed = new Map<number, string>();
+  players.forEach((p) => p.groupSeed != null && bySeed.set(p.groupSeed, p.name));
+  const matches = readMatches(g, hr + 1, c.order, setsCol, bySeed);
+  const ranked = rankPlayers(players);
+  const total = (players.length * (players.length - 1)) / 2;
+  const done = matches.length >= total && matches.every((m) => m.winner);
+  const table: Group = { name: label, label: id, players: ranked, matches };
+  return {
+    bracket: {
+      id,
+      label,
+      format: 'roundrobin',
+      table,
+      size: players.length,
+      players: players.length,
+      preliminary,
+      champion: done ? ranked[0].name : null,
+      rounds: [],
+    },
+    firstRound: entries,
+  };
 }
 
 function chooseDraw(draws: Group[][], firstRounds: Entry[][], warn: (m: string) => void, tab: string): 1 | 2 {
@@ -372,6 +495,7 @@ function parseEvent(tab: string, g: Grid, warn: (m: string) => void): EventData 
   const L = eventLayout(g);
   if (!L) return null;
   const roster = parseRoster(g, L.roster);
+  if (roster.length === 0) return null;
   const draws = L.draws.slice(0, 2).map((s) => parseDraw(g, s));
   const parsed = parseBrackets(g, L.bracketCol, warn, tab);
   const draw = chooseDraw(draws, parsed.map((p) => p.firstRound), warn, tab);

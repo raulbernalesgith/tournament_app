@@ -64,6 +64,18 @@ export interface Group {
   /** Short label, e.g. "6". */
   label: string;
   players: GroupPlayer[];
+  /** Round-robin results from the "Match Order" / "Sets (P1-P2)" columns. */
+  matches: GroupMatch[];
+}
+
+export interface GroupMatch {
+  /** 1-based order of play. */
+  order: number;
+  a: string;
+  b: string;
+  aSets: number | null;
+  bSets: number | null;
+  winner: string | null;
 }
 
 export interface GroupPlayer {
@@ -82,6 +94,10 @@ export interface Bracket {
   /** "A", "B", "C", "D"... */
   id: string;
   label: string;
+  /** Single elimination, or one round-robin group (e.g. "Consolation (Round-Robin)"). */
+  format: 'knockout' | 'roundrobin';
+  /** Round-robin standings and results (format "roundrobin" only). */
+  table?: Group;
   /** Draw size, e.g. 32. */
   size: number;
   /** Number of real entrants (excluding byes). */

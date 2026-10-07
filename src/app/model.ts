@@ -23,23 +23,38 @@ export type Stage = 'done' | 'pre' | 'live' | 'next' | 'groups';
 export const isBye = (m: Match) => m.a.bye || m.b.bye;
 export const isPlayed = (m: Match) => !isBye(m) && m.a.score != null && m.b.score != null;
 
+export function bracketTotal(b: Bracket): number {
+  if (b.format === 'roundrobin') {
+    const n = b.table?.players.length ?? 0;
+    return (n * (n - 1)) / 2;
+  }
+  return Math.max(0, b.players - 1);
+}
+
+export function bracketPlayed(b: Bracket): number {
+  if (b.format === 'roundrobin') return (b.table?.matches ?? []).filter((m) => m.winner).length;
+  return b.rounds.reduce((s, r) => s + r.matches.filter(isPlayed).length, 0);
+}
+
 export function eventModel(ev: EventData): EventModel {
   const spot = new Map<string, GroupSpot>();
   ev.groups.forEach((group) => group.players.forEach((player) => spot.set(player.name, { group, player })));
   const dest = new Map<number, string>();
-  ev.brackets.forEach((b) =>
-    b.rounds[0]?.matches.forEach((m) =>
-      [m.a.name, m.b.name].forEach((n) => {
-        const s = n ? spot.get(n) : undefined;
-        if (s && !dest.has(s.player.rank)) dest.set(s.player.rank, b.id);
-      }),
-    ),
-  );
+  ev.brackets.forEach((b) => {
+    const names =
+      b.format === 'roundrobin'
+        ? (b.table?.players ?? []).map((p) => p.name)
+        : (b.rounds[0]?.matches ?? []).flatMap((m) => [m.a.name, m.b.name]);
+    names.forEach((n) => {
+      const s = n ? spot.get(n) : undefined;
+      if (s && !dest.has(s.player.rank)) dest.set(s.player.rank, b.id);
+    });
+  });
   const people = [...ev.byes, ...ev.groups.flatMap((g) => g.players.map((p) => p.name))];
   const gTotal = ev.groups.reduce((a, g) => a + (g.players.length * (g.players.length - 1)) / 2, 0);
   const gPlayed = ev.groups.reduce((a, g) => a + g.players.reduce((s, p) => s + p.wins, 0), 0);
-  const kTotal = ev.brackets.reduce((a, b) => a + Math.max(0, b.players - 1), 0);
-  const kPlayed = ev.brackets.reduce((a, b) => a + b.rounds.reduce((s, r) => s + r.matches.filter(isPlayed).length, 0), 0);
+  const kTotal = ev.brackets.reduce((a, b) => a + bracketTotal(b), 0);
+  const kPlayed = ev.brackets.reduce((a, b) => a + bracketPlayed(b), 0);
   let stage: Stage = 'groups';
   if (ev.brackets.length && ev.brackets.every((b) => b.champion)) stage = 'done';
   else if (ev.brackets.some((b) => b.preliminary)) stage = 'pre';
@@ -142,6 +157,14 @@ const IN_ROUND: Record<string, string> = { R1: 'Round 1', R2: 'Round 2', R3: 'Ro
 const NEXT_ROUND: Record<string, string> = { R1: 'Round 1', R2: 'Round 2', R3: 'Round 3', QF: 'Quarterfinal', SF: 'Semifinal', Final: 'Final' };
 
 export function finishOf(ev: EventData, name: string): Finish {
+  const rr = ev.brackets.find((b) => b.format === 'roundrobin' && b.table?.players.some((p) => p.name === name));
+  if (rr && rr.table) {
+    const me = rr.table.players.find((p) => p.name === name)!;
+    const left = bracketTotal(rr) - bracketPlayed(rr);
+    if (rr.champion === name) return { kind: 'champ', short: 'Champion', long: `${rr.label} champion`, sub: `Won the round-robin ${me.wins}–${me.losses}`, bracket: rr };
+    if (left === 0) return { kind: 'out', short: ord(me.rank), long: `${ord(me.rank)} in ${rr.label}`, sub: `Round-robin record ${me.wins}–${me.losses}`, bracket: rr };
+    return { kind: 'alive', short: 'Playing', long: `Playing the ${rr.label} round-robin`, sub: `${me.wins}–${me.losses} so far · currently ${ord(me.rank)}`, bracket: rr };
+  }
   const p = pathOf(ev, name);
   if (!p) return { kind: 'none', short: 'Groups', long: 'Not in a knockout draw yet', sub: 'Waiting on the group stage', bracket: null };
   const last = p.steps[p.steps.length - 1];

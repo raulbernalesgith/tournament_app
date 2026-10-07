@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
-import type { Bracket, EventData, Match, Tournament } from '../shared/types';
+import type { Bracket, EventData, GroupMatch, Match, Tournament } from '../shared/types';
 import { Icon } from './icons';
 import {
   STAGE_LABEL,
@@ -11,6 +11,8 @@ import {
   initials,
   isBye,
   isPlayed,
+  bracketPlayed,
+  bracketTotal,
   nextUp,
   ord,
   origin,
@@ -251,7 +253,11 @@ function Main({ t, ev, ui, setUi, desk, theme, setTheme, now, toast, menuOpen, s
         {shownView === 'knockout' && bracket && (desk ? (
           <div class="panel glass streak">
             <BracketHead b={bracket} sel={sel} />
-            <BracketTree t={t} M={M} b={bracket} sel={sel} pick={(n) => pick(n, false)} />
+            {bracket.format === 'roundrobin' ? (
+              <RoundRobin t={t} M={M} b={bracket} sel={sel} onPick={openProfile} desk />
+            ) : (
+              <BracketTree t={t} M={M} b={bracket} sel={sel} pick={(n) => pick(n, false)} />
+            )}
           </div>
         ) : (
           <KnockoutPhone t={t} M={M} ev={ev} b={bracket} ui={ui} setUi={setUi} openProfile={openProfile} />
@@ -424,7 +430,7 @@ const stageColor = (s: EventModel['stage']) => (s === 'done' || s === 'live' ? '
 function bracketStatus(b: Bracket) {
   if (b.champion) return { label: 'Complete', cls: 'st-complete' };
   if (b.preliminary) return { label: 'Projected', cls: 'st-soft' };
-  if (b.rounds.some((r) => r.matches.some(isPlayed))) return { label: 'Live', cls: 'st-live' };
+  if (bracketPlayed(b) > 0) return { label: 'Live', cls: 'st-live' };
   return { label: 'Up next', cls: 'st-soft' };
 }
 
@@ -596,18 +602,18 @@ function Overview({ t, ev, M, setUi, openProfile, syncLabel, live }: { t: Tourna
           <div class="list-card glass">
             {ev.brackets.map((b) => {
               const st = bracketStatus(b);
-              const played = b.rounds.reduce((a, r) => a + r.matches.filter(isPlayed).length, 0);
+              const played = bracketPlayed(b);
               return (
                 <button key={b.id} class="row-btn" onClick={() => setUi({ v: 'knockout', b: b.id, r: 0 })}>
                   <span class={`badge b-${b.id}`} style={{ width: 42, height: 42, borderRadius: 14, fontSize: 18 }}>{b.id}</span>
                   <span style={{ flex: 1, minWidth: 0 }}>
                     <span style={{ display: 'block', fontSize: 16, fontWeight: 650 }}>{b.label}</span>
-                    <span class="faint" style={{ display: 'block', fontSize: 13 }}>{b.players} players · {b.size}-draw</span>
+                    <span class="faint" style={{ display: 'block', fontSize: 13 }}>{b.players} players · {b.format === 'roundrobin' ? 'round-robin' : `${b.size}-draw`}</span>
                   </span>
                   <span style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4, maxWidth: 132, minWidth: 0 }}>
                     <span class={`pill ${st.cls}`}>{st.label}</span>
                     <span class="ell" style={{ maxWidth: 132, fontSize: 13, fontWeight: 600, color: b.champion ? 'var(--text)' : 'var(--text-2)' }}>
-                      {b.champion ?? `${played} of ${Math.max(0, b.players - 1)} played`}
+                      {b.champion ?? `${played} of ${bracketTotal(b)} played`}
                     </span>
                   </span>
                   <Icon name="chevRight" size={18} stroke={2} class="faint" />
@@ -696,6 +702,7 @@ function GroupsView({ t, ev, M, ui, setUi, sel, openProfile, desk }: { t: Tourna
                   </button>
                 );
               })}
+              {g.matches.length > 0 && <MatchList matches={g.matches} me={sel} onPick={openProfile} />}
             </div>
           );
         })}
@@ -711,7 +718,7 @@ function GroupsView({ t, ev, M, ui, setUi, sel, openProfile, desk }: { t: Tourna
 
 function BracketHead({ b, sel }: { b: Bracket; sel: string }) {
   const st = bracketStatus(b);
-  const played = b.rounds.reduce((a, r) => a + r.matches.filter(isPlayed).length, 0);
+  const played = bracketPlayed(b);
   return (
     <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 14 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
@@ -721,10 +728,10 @@ function BracketHead({ b, sel }: { b: Bracket; sel: string }) {
             <h2 style={{ fontSize: 24, fontWeight: 700 }}>{b.label}</h2>
             <span class={`pill ${st.cls}`}>{st.label}</span>
           </div>
-          <div class="muted" style={{ fontSize: 14 }}>{b.players} players · {b.size}-player draw · {played}/{Math.max(0, b.players - 1)} matches played</div>
+          <div class="muted" style={{ fontSize: 14 }}>{b.players} players · {b.format === 'roundrobin' ? 'round-robin, everyone plays everyone' : `${b.size}-player draw`} · {played}/{bracketTotal(b)} matches played</div>
         </div>
       </div>
-      <div class="muted" style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 13 }}>
+      <div class="muted" style={{ display: b.format === 'roundrobin' ? 'none' : 'flex', alignItems: 'center', gap: 10, fontSize: 13 }}>
         <span style={{ width: 26, height: 3, borderRadius: 2, background: 'var(--accent)' }} />
         {sel ? `Tracing ${sel} · click any name to follow their run` : 'Click any name to trace a run'}
       </div>
@@ -809,24 +816,39 @@ function TreeRow({ t, M, b, m, side, ri, mi, sel, pick }: { t: Tournament; M: Ev
 }
 
 function KnockoutPhone({ t, M, ev, b, ui, setUi, openProfile }: { t: Tournament; M: EventModel; ev: EventData; b: Bracket; ui: Ui; setUi: (p: Partial<Ui>) => void; openProfile: (n: string) => void }) {
+  const seg = (
+    <Seg
+      label="Knockout brackets"
+      class="br-seg"
+      items={ev.brackets.map((x) => ({ id: x.id, node: <><span class="l">{x.id}</span><span class="s">{x.label}</span></> }))}
+      value={b.id}
+      onPick={(id) => setUi({ b: id, r: 0 })}
+      width={(Math.min(window.innerWidth, 900) - 32 - 8) / ev.brackets.length}
+      height={62}
+    />
+  );
+  if (b.format === 'roundrobin') {
+    const st = bracketStatus(b);
+    return (
+      <div class="view">
+        {seg}
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, padding: '0 4px' }}>
+          <span class="muted" style={{ fontSize: 14 }}>{b.players} players · round-robin · {bracketPlayed(b)}/{bracketTotal(b)} played</span>
+          <span class={`pill ${st.cls}`}>{st.label}</span>
+        </div>
+        <RoundRobin t={t} M={M} b={b} sel="" onPick={openProfile} desk={false} />
+      </div>
+    );
+  }
   const ri = Math.min(Math.max(0, ui.r), b.rounds.length - 1);
   const R = b.rounds[ri];
   const real = R.matches.filter((m) => !isBye(m));
   const byes = R.matches.length - real.length;
   const st = bracketStatus(b);
-  const width = (Math.min(window.innerWidth, 900) - 32 - 8) / ev.brackets.length;
   const fm = b.rounds[b.rounds.length - 1].matches[0];
   return (
     <div class="view">
-      <Seg
-        label="Knockout brackets"
-        class="br-seg"
-        items={ev.brackets.map((x) => ({ id: x.id, node: <><span class="l">{x.id}</span><span class="s">{x.label}</span></> }))}
-        value={b.id}
-        onPick={(id) => setUi({ b: id, r: 0 })}
-        width={width}
-        height={62}
-      />
+      {seg}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, padding: '0 4px' }}>
         <span class="muted" style={{ fontSize: 14 }}>{b.players} players · {b.size}-player draw</span>
         <span class={`pill ${st.cls}`}>{st.label}</span>
@@ -1029,6 +1051,7 @@ function Profile({ t, M, ev, name, open, close }: { t: Tournament; M: EventModel
   const s = M.spot.get(name);
   const f = finishOf(ev, name);
   const p = pathOf(ev, name);
+  const rrB = ev.brackets.find((b) => b.format === 'roundrobin' && b.table?.players.some((x) => x.name === name));
   const champ = f.kind === 'champ';
   const lp = formatDate(info?.lastPlayed ?? null);
   const tags = [info?.province, info?.gender ? `Gender ${info.gender}` : '', s ? `Seed ${s.player.seed ?? '—'}` : ev.byes.includes(name) ? 'Group-stage bye' : '', info?.temp ? 'Temp' : ''].filter(Boolean);
@@ -1068,6 +1091,14 @@ function Profile({ t, M, ev, name, open, close }: { t: Tournament; M: EventModel
             <div class="tile"><div class="faint" style={{ fontSize: 12, fontWeight: 600 }}>Last played</div><span class="mono">{lp.main}</span><div class="faint" style={{ fontSize: 12 }}>{lp.year}</div></div>
             <div class="tile"><div class="faint" style={{ fontSize: 12, fontWeight: 600 }}>{s ? s.group.name : 'Group stage'}</div><span class="mono">{s ? `${ord(s.player.rank)} · ${s.player.wins}–${s.player.losses}` : 'Bye'}</span><div class="faint" style={{ fontSize: 12 }}>{s ? (M.dest.get(s.player.rank) ? `Into bracket ${M.dest.get(s.player.rank)}` : 'Group stage') : 'Skipped the groups'}</div></div>
           </div>
+          {rrB?.table && (
+            <>
+              <div class="section-head" style={{ padding: 0, marginTop: 22 }}><h3 style={{ fontSize: 17 }}>{rrB.id} · {rrB.label} round-robin</h3><span class="mono faint" style={{ fontSize: 12 }}>{bracketPlayed(rrB)}/{bracketTotal(rrB)} played</span></div>
+              <div style={{ marginTop: 10 }}>
+                <MatchList matches={rrB.table.matches.filter((m) => m.a === name || m.b === name)} me={name} />
+              </div>
+            </>
+          )}
           {p && (
             <>
               <div class="section-head" style={{ padding: 0, marginTop: 22 }}><h3 style={{ fontSize: 17 }}>Knockout · {p.bracket.id} {p.bracket.label}</h3><span class="faint" style={{ fontSize: 12 }}>{p.bracket.players} players</span></div>
@@ -1099,10 +1130,82 @@ function Profile({ t, M, ev, name, open, close }: { t: Tournament; M: EventModel
                   </div>
                 ))}
               </div>
+              {s.group.matches.some((m) => m.a === name || m.b === name) && (
+                <div style={{ marginTop: 10 }}>
+                  <MatchList matches={s.group.matches.filter((m) => m.a === name || m.b === name)} me={name} />
+                </div>
+              )}
             </>
           )}
         </div>
       </aside>
     </>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Round-robin pieces                                                  */
+/* ------------------------------------------------------------------ */
+
+function MatchList({ matches, me, onPick }: { matches: GroupMatch[]; me?: string; onPick?: (n: string) => void }) {
+  return (
+    <div class="mlist">
+      {matches.map((m) => {
+        const done = !!m.winner;
+        const side = (n: string, sets: number | null) => (
+          <button class={`ml-name ${m.winner === n ? 'win' : done ? 'lose' : ''} ${me === n ? 'me' : ''}`} disabled={!onPick} onClick={() => onPick?.(n)}>
+            <span class="ell">{n}</span>
+            <span class="mono">{sets ?? '–'}</span>
+          </button>
+        );
+        return (
+          <div class="ml-row" key={m.order}>
+            <span class="mono faint ml-no">{m.order}</span>
+            {side(m.a, m.aSets)}
+            <span class="faint ml-vs">vs</span>
+            {side(m.b, m.bSets)}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function RoundRobin({ t, M, b, sel, onPick, desk }: { t: Tournament; M: EventModel; b: Bracket; sel: string; onPick: (n: string) => void; desk: boolean }) {
+  const table = b.table!;
+  const played = bracketPlayed(b) > 0;
+  return (
+    <div class="rr" style={desk ? { marginTop: 22 } : {}}>
+      {b.champion && (
+        <button class="champ-card glass streak btn" onClick={() => onPick(b.champion!)}>
+          <span class="trophy"><Icon name="trophy" size={28} stroke={1.7} /></span>
+          <span style={{ minWidth: 0 }}>
+            <span class="overline" style={{ display: 'block', fontSize: 11, color: 'var(--accent-text)' }}>{b.id} · {b.label} champion</span>
+            <span style={{ display: 'block', marginTop: 2, fontSize: 24, fontWeight: 700, letterSpacing: '-0.03em' }}>{b.champion}</span>
+            <span class="muted" style={{ display: 'block', fontSize: 14 }}>Won the round-robin {table.players[0].wins}–{table.players[0].losses} · rating {rating(t, b.champion)}</span>
+          </span>
+        </button>
+      )}
+      <div class="rr-grid">
+        <div class={`group-card ${desk ? 'inner' : 'glass'}`}>
+          <div class="group-head"><div style={{ fontSize: 17, fontWeight: 700 }}>Standings</div><div class="mono faint" style={{ fontSize: 12 }}>W–L</div></div>
+          {table.players.map((p) => (
+            <button key={p.name} class={`group-row ${sel === p.name ? 'sel' : ''}`} style={{ gridTemplateColumns: '28px minmax(0, 1fr) 44px 38px' }} onClick={() => onPick(p.name)}>
+              <span class={`rank-dot mono ${p.rank === 1 && played ? 'lead' : ''}`}>{p.rank}</span>
+              <span style={{ minWidth: 0 }}>
+                <span class="ell" style={{ display: 'block', fontSize: 15, fontWeight: 600 }}>{p.name}</span>
+                <span class="faint" style={{ display: 'block', fontSize: 12 }}>Seed {p.groupSeed ?? '—'} · {origin(M, p.name) || 'Entry'}</span>
+              </span>
+              <span class="mono muted" style={{ fontSize: 13, textAlign: 'right' }}>{rating(t, p.name)}</span>
+              <span class="mono" style={{ fontSize: 14, fontWeight: 600, textAlign: 'right' }}>{p.wins}–{p.losses}</span>
+            </button>
+          ))}
+        </div>
+        <div class={`group-card ${desk ? 'inner' : 'glass'}`}>
+          <div class="group-head"><div style={{ fontSize: 17, fontWeight: 700 }}>Matches</div><div class="mono faint" style={{ fontSize: 12 }}>{bracketPlayed(b)}/{bracketTotal(b)} played</div></div>
+          <MatchList matches={table.matches} me={sel} onPick={onPick} />
+        </div>
+      </div>
+    </div>
   );
 }

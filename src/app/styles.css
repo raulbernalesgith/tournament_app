@@ -417,3 +417,19 @@ h1, h2, h3 { margin: 0; letter-spacing: -0.02em; }
   :root[data-theme='light'] .bd-table { opacity: 0.55; }
   :root[data-theme='dark'] .bd-table { opacity: 0.8; }
 }
+
+/* Round-robin results */
+.mlist { display: flex; flex-direction: column; gap: 4px; padding: 6px 0 8px; border-top: 1px solid var(--hair); }
+.ml-row { display: grid; grid-template-columns: 20px minmax(0, 1fr) 22px minmax(0, 1fr); align-items: center; gap: 6px; }
+.ml-no { font-size: 11px; text-align: center; }
+.ml-vs { font-size: 11px; text-align: center; }
+.ml-name { appearance: none; border: 0; margin: 0; background: var(--chip); border-radius: 10px; height: 32px; padding: 0 8px 0 10px; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 6px; font-size: 13px; text-align: left; cursor: pointer; color: var(--text); }
+.ml-name:disabled { cursor: default; }
+.ml-name .mono { font-weight: 700; color: var(--text-2); }
+.ml-name.win { font-weight: 650; }
+.ml-name.win .mono { color: var(--accent-text); }
+.ml-name.lose { color: var(--text-2); }
+.ml-name.me { box-shadow: inset 0 0 0 1px var(--accent-line); }
+.rr { display: flex; flex-direction: column; gap: 14px; }
+.rr-grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
+@media (max-width: 899px) { .rr-grid { grid-template-columns: 1fr; } }

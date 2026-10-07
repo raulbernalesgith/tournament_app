@@ -12,8 +12,7 @@ export type SheetMode = 'sheets-api' | 'sheets-csv' | 'none';
 export function sheetMode(env: SheetEnv): SheetMode {
   if (!env.SHEET_ID) return 'none';
   if (env.GOOGLE_API_KEY) return 'sheets-api';
-  if (env.SHEET_TABS) return 'sheets-csv';
-  return 'none';
+  return 'sheets-csv';
 }
 
 async function getJson<T>(url: string): Promise<T> {
@@ -81,10 +80,55 @@ export function parseTabs(spec: string): { title: string; gid: string }[] {
     .filter((t) => t.title && /^\d+$/.test(t.gid));
 }
 
-/** Reads the listed tabs through the public CSV export (sheet must be shared "anyone with the link"). */
-export async function fetchViaCsv(sheetId: string, tabsSpec: string): Promise<Workbook> {
-  const tabs = parseTabs(tabsSpec);
-  if (!tabs.length) throw new Error('SHEET_TABS has no valid "tab=gid" pairs');
+const decode = (s: string) =>
+  s
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;|&#x27;/g, "'")
+    .trim();
+
+/** Pulls tab names and gids out of the sheet's public HTML view. */
+export function tabsFromHtml(html: string): { title: string; gid: string }[] {
+  const found = new Map<string, string>();
+  const patterns = [
+    /<li[^>]*id="sheet-button-(\d+)"[^>]*>\s*<a[^>]*>([^<]+)<\/a>/g,
+    /name:\s*"((?:[^"\\]|\\.)+)"[^}]*?gid:\s*"(\d+)"/g,
+  ];
+  for (const re of patterns) {
+    for (const m of html.matchAll(re)) {
+      const [gid, title] = re === patterns[0] ? [m[1], m[2]] : [m[2], m[1].replace(/\\(.)/g, '$1')];
+      const t = decode(title);
+      if (t && !found.has(t)) found.set(t, gid);
+    }
+    if (found.size) break;
+  }
+  return [...found.entries()].map(([title, gid]) => ({ title, gid }));
+}
+
+/** Lists every tab of a link-shared sheet, so new event tabs are picked up without config changes. */
+export async function discoverTabs(sheetId: string): Promise<{ title: string; gid: string }[]> {
+  const res = await fetch(`https://docs.google.com/spreadsheets/d/${encodeURIComponent(sheetId)}/htmlview`, { redirect: 'follow' });
+  if (!res.ok) throw new Error(`Sheet tab list failed: ${res.status}`);
+  return tabsFromHtml(await res.text());
+}
+
+/**
+ * Reads tabs through the public CSV export (sheet must be shared "anyone with the link").
+ * Tabs are discovered from the sheet itself, plus any listed in SHEET_TABS.
+ */
+export async function fetchViaCsv(sheetId: string, tabsSpec?: string): Promise<Workbook> {
+  // Discover every tab so new event tabs show up on their own; SHEET_TABS fills any gaps.
+  let tabs: { title: string; gid: string }[] = [];
+  try {
+    tabs = await discoverTabs(sheetId);
+  } catch {
+    tabs = [];
+  }
+  const known = new Set(tabs.map((t) => t.gid));
+  for (const t of tabsSpec ? parseTabs(tabsSpec) : []) if (!known.has(t.gid)) tabs.push(t);
+  if (!tabs.length) throw new Error('Could not find the sheet tabs; set SHEET_TABS to "tab=gid" pairs');
   const id = encodeURIComponent(sheetId);
   const grids = await Promise.all(
     tabs.map(async (t) => {
@@ -107,6 +151,6 @@ export async function fetchViaCsv(sheetId: string, tabsSpec: string): Promise<Wo
 export async function fetchWorkbook(env: SheetEnv): Promise<{ wb: Workbook; mode: Exclude<SheetMode, 'none'> }> {
   const mode = sheetMode(env);
   if (mode === 'sheets-api') return { wb: await fetchViaApi(env.SHEET_ID!, env.GOOGLE_API_KEY!), mode };
-  if (mode === 'sheets-csv') return { wb: await fetchViaCsv(env.SHEET_ID!, env.SHEET_TABS!), mode };
-  throw new Error('Google Sheet is not configured (set SHEET_ID plus GOOGLE_API_KEY or SHEET_TABS)');
+  if (mode === 'sheets-csv') return { wb: await fetchViaCsv(env.SHEET_ID!, env.SHEET_TABS), mode };
+  throw new Error('Google Sheet is not configured (set SHEET_ID)');
 }
