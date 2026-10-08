@@ -363,11 +363,21 @@ function parseBrackets(g: Grid, bc: number, warn: (m: string) => void, tab: stri
     const preliminary = /preliminary\s+projection/i.test(rest);
     const sizeMatch = /\((\d+)\s*players?\s*\/\s*(\d+)\s*-?\s*player\s*bracket\)/i.exec(rest);
     const label = rest.replace(/\(.*$/, '').replace(/\s+bracket\s*$/i, '').trim() || `Bracket ${id}`;
-    if (/round[\s-]*robin/i.test(rest)) {
+    // Any bracket (A, B, C, D…) can be a knockout or a round-robin. Decide from the
+    // title first, then from the layout: knockout blocks have round headers right
+    // under the title, round-robin blocks have a Seed/Wins/Losses table.
+    const saysRoundRobin = /round[\s-]*robin/i.test(rest);
+    const hasRoundHeaders = /^(round|quarter|semi|final|r\d)/i.test(text(at(g, tr + 1, bc)));
+    if (saysRoundRobin || !hasRoundHeaders) {
       const rr = parseRoundRobin(g, tr, bc, id, label, preliminary);
-      if (rr) out.push(rr);
-      else warn(`${tab}: round-robin bracket ${id} has no players listed`);
-      continue;
+      if (rr) {
+        out.push(rr);
+        continue;
+      }
+      if (saysRoundRobin || !hasRoundHeaders) {
+        warn(`${tab}: bracket ${id} has no players or round headers yet`);
+        continue;
+      }
     }
 
     const hr = tr + 1;

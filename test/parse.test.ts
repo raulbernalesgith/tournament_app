@@ -167,3 +167,33 @@ describe('2026-10-07 workbook (match results, round-robin, empty tabs)', () => {
     expect(tabsFromHtml('items.push({name: "Open_Singles", pageUrl: "x", gid: "1255341360",});')).toEqual([{ title: 'Open_Singles', gid: '1255341360' }]);
   });
 });
+
+describe('bracket format is decided per block', () => {
+  // Build a tab whose B is a knockout and C is a round-robin (C has no "(Round-Robin)" in its title).
+  const open = (latest as unknown as Workbook).sheets['Open_Singles'];
+  const a4l = (latest as unknown as Workbook).sheets['Active-4-Life'];
+  const grid = open.map((r) => r.slice());
+  const bc = 32; // AG
+  const cTitle = grid.findIndex((r) => typeof r[bc] === 'string' && (r[bc] as string).startsWith('GROUP C'));
+  // wipe the knockout C block and paste the round-robin block from Active-4-Life in its place
+  for (let r = cTitle; r < grid.length; r += 1) grid[r] = grid[r].slice(0, bc);
+  const rrStart = a4l.findIndex((r) => typeof r[bc] === 'string' && (r[bc] as string).startsWith('GROUP B'));
+  a4l.slice(rrStart, rrStart + 13).forEach((row, i) => {
+    const target = (grid[cTitle + i] ??= []);
+    while (target.length < bc) target.push(null);
+    row.slice(bc).forEach((v, j) => (target[bc + j] = v));
+  });
+  grid[cTitle][bc] = 'GROUP C - Division C (5 Players / 1 Group)';
+  const wb: Workbook = { title: 'mix', sheets: { Canada_Rankings: (latest as unknown as Workbook).sheets['Canada_Rankings'], Mixed: grid } };
+  const mixed = buildTournament(wb, { kind: 'snapshot', label: 'test' }).events[0];
+
+  it('keeps B as a knockout and reads C as a round-robin from its layout', () => {
+    expect(mixed.brackets.map((b) => [b.id, b.format])).toEqual([
+      ['A', 'knockout'],
+      ['B', 'knockout'],
+      ['C', 'roundrobin'],
+    ]);
+    expect(mixed.brackets[2].table!.players).toHaveLength(5);
+    expect(mixed.brackets[2].table!.matches).toHaveLength(10);
+  });
+});

@@ -357,7 +357,16 @@ function Hero({ t, ev, M, desk, setUi, openProfile }: { t: Tournament; ev: Event
   let chips: { round: string; score: string }[] = [];
   let cta = 'See the groups';
   let go = () => setUi({ v: 'groups' });
-  if (A?.champion) {
+  if (A?.format === 'roundrobin' && A.table) {
+    const lead = A.table.players[0];
+    icon = A.champion ? 'trophy' : 'clock';
+    over = `${A.id} · ${A.label} · round-robin`;
+    sub = A.champion ? 'Champion' : 'Leading';
+    title = lead.name;
+    line = `${lead.wins}–${lead.losses} in the round-robin · ${bracketPlayed(A)}/${bracketTotal(A)} matches played`;
+    cta = 'Open the standings';
+    go = () => setUi({ v: 'knockout', b: A.id });
+  } else if (A?.champion) {
     const fm = A.rounds[A.rounds.length - 1].matches[0];
     const ca = fm.a.name === A.champion;
     const ru = ca ? fm.b : fm.a;

@@ -35,7 +35,7 @@ The sheet must be shared as **Anyone with the link → Viewer**. Then add these 
 
 - Tab 1 is the ranking list. Every other tab is an event; tabs with no registered players are not published.
 - Group tables can carry `Match Order` ("Seed 1 vs Seed 3") and `Sets (P1-P2)` ("3-1") columns; results show under each group. Tip: format the Sets columns as **Plain text** so Sheets doesn't turn "3-1" into a date (dates are read back as month-day, so they still work).
-- Brackets are `GROUP X - Name (...)` blocks. A title containing `(Round-Robin)` is shown as a standings table plus results instead of a knockout tree.
+- Brackets are `GROUP X - Name (...)` blocks, and any of them (A, B, C, D…) can be a knockout or a round-robin. A block is a round-robin when its title says `(Round-Robin)` or when it has a Seed / Wins / Losses table instead of round headers; it is then shown as standings plus results.
 
 `/api/health` shows which source is active and the last sync error, if any.
 
