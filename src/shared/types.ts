@@ -44,8 +44,16 @@ export interface EventData {
   roster: RosterEntry[];
   /** Players who skip the group stage (Group_Stage_Bye = TRUE). */
   byes: string[];
-  /** Which of the two group draws on the tab feeds the brackets. */
+  /**
+   * Which of the two group draws on the tab is in use: 1 is the serpentine
+   * draw, 2 the seeded pot draw.
+   */
   draw: 1 | 2;
+  /**
+   * Why that draw was chosen: it is the only one with entered results, the
+   * bracket "(Group N)" labels match it, or neither told them apart.
+   */
+  drawBy: 'results' | 'brackets' | 'default';
   groups: Group[];
   brackets: Bracket[];
 }
@@ -64,8 +72,13 @@ export interface Group {
   /** Short label, e.g. "6". */
   label: string;
   players: GroupPlayer[];
-  /** Round-robin results from the "Match Order" / "Sets (P1-P2)" columns. */
+  /** Round-robin results from the "Match" / "Sets" / "G1"–"G5" columns. */
   matches: GroupMatch[];
+  /**
+   * True when W, L, Pts and Rank were worked out from the match results
+   * because the sheet's standings formula showed "Loading…" or an error.
+   */
+  computed?: boolean;
 }
 
 export interface GroupMatch {
@@ -75,6 +88,8 @@ export interface GroupMatch {
   b: string;
   aSets: number | null;
   bSets: number | null;
+  /** Game scores from the G1–G5 columns, as [a, b] points. */
+  games: [number, number][];
   winner: string | null;
 }
 
@@ -87,6 +102,8 @@ export interface GroupPlayer {
   rating: number | null;
   wins: number;
   losses: number;
+  /** Match points (2 per win, 1 per loss) when the sheet has a Pts column. */
+  points: number | null;
   rank: number;
 }
 

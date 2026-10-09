@@ -1,5 +1,5 @@
-import { buildTournament, fingerprint } from '../shared/parse';
-import type { Tournament, Workbook } from '../shared/types';
+import { DRAW_NAME, buildTournament, fingerprint } from '../shared/parse';
+import type { EventData, Tournament, Workbook } from '../shared/types';
 import snapshot from '../data/snapshot.grids.json';
 import { fetchWorkbook, sheetMode, type SheetEnv } from './sheets';
 
@@ -8,8 +8,17 @@ export interface Env extends SheetEnv {
   CACHE?: KVNamespace;
 }
 
-const KEY = 'tournament:v1';
+// Bump when the JSON shape changes, so a new deploy never serves data cached by the old one.
+const KEY = 'tournament:v2';
+// The previous version's data, served only if the first sync after a deploy fails.
+const PREVIOUS_KEY = 'tournament:v1';
 const MEMO_MS = 15_000;
+
+const DRAW_REASON: Record<EventData['drawBy'], string> = {
+  results: 'the one with results entered',
+  brackets: 'matches the bracket labels',
+  default: 'default',
+};
 
 interface Stored {
   body: string;
@@ -52,7 +61,14 @@ async function refresh(env: Env): Promise<Stored | null> {
       return data;
     }
     const body = JSON.stringify(t);
-    if (env.CACHE) await env.CACHE.put(KEY, body, { metadata: { hash } });
+    if (env.CACHE) {
+      try {
+        await env.CACHE.put(KEY, body, { metadata: { hash } });
+      } catch (err) {
+        // Still serve the fresh data; the next sync writes it again.
+        console.warn('cache write failed', err instanceof Error ? err.message : String(err));
+      }
+    }
     const data = { body, hash };
     memo = { at: Date.now(), data };
     lastError = null;
@@ -77,6 +93,10 @@ async function current(env: Env): Promise<Stored> {
     }
     const fresh = await refresh(env);
     if (fresh) return fresh;
+    if (env.CACHE) {
+      const old = await env.CACHE.getWithMetadata<{ hash: string }>(PREVIOUS_KEY, { type: 'text', cacheTtl: 30 });
+      if (old.value) return { body: old.value, hash: old.metadata?.hash ?? 'previous' };
+    }
   }
   return snapshotData();
 }
@@ -122,7 +142,14 @@ export default {
         mode,
         storage: env.CACHE ? 'kv' : 'memory',
         generatedAt: t.generatedAt,
-        events: t.events.map((e) => ({ id: e.id, name: e.name, groups: e.groups.length, brackets: e.brackets.map((b) => b.id) })),
+        events: t.events.map((e) => ({
+          id: e.id,
+          name: e.name,
+          players: e.roster.length,
+          groupDraw: e.groups.length ? `${DRAW_NAME[e.draw]} (${DRAW_REASON[e.drawBy] ?? 'previous version'})` : 'not drawn yet',
+          groups: e.groups.length,
+          brackets: e.brackets.map((b) => `${b.id} ${b.format}`),
+        })),
         warnings: t.warnings,
         lastError,
       });

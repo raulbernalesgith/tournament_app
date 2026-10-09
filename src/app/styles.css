@@ -295,11 +295,23 @@ h1, h2, h3 { margin: 0; letter-spacing: -0.02em; }
 .chips-row::-webkit-scrollbar { display: none; }
 .filter-chip { flex: none; height: 44px; min-width: 54px; padding: 0 16px; border-radius: 22px; font-size: 14px; font-weight: 650; cursor: pointer; color: var(--text-2); transition: color 0.2s ease; }
 .filter-chip[aria-pressed='true'] { background: var(--lens); box-shadow: var(--lens-shadow); color: var(--text); }
-.groups-grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); }
+.groups-grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fill, minmax(min(340px, 100%), 1fr)); }
 .group-card { border-radius: 26px; padding: 6px 14px 4px; }
 .group-head { display: flex; align-items: center; justify-content: space-between; height: 42px; }
 .group-row { appearance: none; border: 0; background: transparent; margin: 0; padding: 0 6px; cursor: pointer; text-align: left; width: 100%; display: grid; grid-template-columns: 28px minmax(0, 1fr) 44px 38px 28px; align-items: center; gap: 10px; min-height: 54px; border-top: 1px solid var(--hair); border-radius: 14px; transition: background-color 0.2s ease; }
 .group-row:first-of-type { border-top-color: transparent; }
+.group-row.with-pts { grid-template-columns: 26px minmax(0, 1fr) 40px 36px 26px 28px; gap: 8px; }
+.group-row.rr-row { grid-template-columns: 28px minmax(0, 1fr) 44px 38px; }
+.group-row.rr-row.with-pts { grid-template-columns: 26px minmax(0, 1fr) 40px 36px 26px; gap: 8px; }
+/* Column labels above a standings table; same grid as the rows below. */
+.group-cols { display: grid; grid-template-columns: 28px minmax(0, 1fr) 44px 38px 28px; gap: 10px; padding: 0 6px 4px; font-size: 10.5px; font-weight: 650; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-3); }
+.group-cols > span { text-align: right; white-space: nowrap; }
+.group-cols > span:last-child { text-align: center; }
+.group-cols.with-pts { grid-template-columns: 26px minmax(0, 1fr) 40px 36px 26px 28px; gap: 8px; }
+.group-cols.rr-cols { grid-template-columns: 28px minmax(0, 1fr) 44px 38px; }
+.group-cols.rr-cols.with-pts { grid-template-columns: 26px minmax(0, 1fr) 40px 36px 26px; gap: 8px; }
+.group-cols.rr-cols > span:last-child { text-align: right; }
+.group-cols + .group-row { border-top-color: transparent; }
 .group-row:hover, .group-row.sel { background: var(--accent-soft); }
 .rank-dot { width: 26px; height: 26px; border-radius: 13px; display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 600; background: var(--chip); color: var(--text-2); }
 .rank-dot.lead { background: var(--accent); color: var(--accent-ink); }
@@ -430,6 +442,11 @@ h1, h2, h3 { margin: 0; letter-spacing: -0.02em; }
 .ml-name.win .mono { color: var(--accent-text); }
 .ml-name.lose { color: var(--text-2); }
 .ml-name.me { box-shadow: inset 0 0 0 1px var(--accent-line); }
+/* Game scores under a match: P1's points first, the game winner's side bold. */
+.ml-games { grid-column: 2 / -1; display: flex; flex-wrap: wrap; gap: 4px; padding: 1px 0 3px 2px; }
+.ml-game { font-size: 11px; line-height: 18px; padding: 0 6px; border-radius: 7px; background: var(--chip); color: var(--text-3); white-space: nowrap; }
+.ml-game b { font-weight: 500; }
+.ml-game b.w { font-weight: 750; color: var(--text); }
 .rr { display: flex; flex-direction: column; gap: 14px; }
 .rr-grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
 @media (max-width: 899px) { .rr-grid { grid-template-columns: 1fr; } }

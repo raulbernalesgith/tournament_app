@@ -2,12 +2,16 @@ import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import type { Bracket, EventData, GroupMatch, Match, Tournament } from '../shared/types';
 import { Icon } from './icons';
 import {
+  DRAW_LABEL,
   STAGE_LABEL,
   ago,
   eventModel,
   feederLabel,
   finishOf,
   formatDate,
+  groupPlayed,
+  groupTotal,
+  hasPoints,
   initials,
   isBye,
   isPlayed,
@@ -425,11 +429,12 @@ function Hero({ t, ev, M, desk, setUi, openProfile }: { t: Tournament; ev: Event
 }
 
 function statsOf(M: EventModel, ev: EventData) {
-  const size = ev.groups[0]?.players.length ?? 0;
+  const sizes = [...new Set(ev.groups.map((g) => g.players.length))].sort((a, b) => a - b);
+  const size = sizes.join('–') || '0';
   return [
     { label: 'Players', value: String(M.people.length), sub: `${ev.byes.length} straight to knockout`, short: 'players' },
-    { label: 'Groups', value: String(ev.groups.length), sub: `${size} players each`, short: `groups of ${size}` },
-    { label: 'Group matches', value: `${M.gPlayed}/${M.gTotal}`, sub: M.gPlayed >= M.gTotal ? 'All played' : `${M.gTotal - M.gPlayed} to play`, short: 'group matches' },
+    { label: 'Groups', value: String(ev.groups.length), sub: ev.groups.length ? `${size} players each` : 'Not drawn yet', short: ev.groups.length ? `groups of ${size}` : 'groups' },
+    { label: 'Group matches', value: `${M.gPlayed}/${M.gTotal}`, sub: M.gTotal === 0 ? 'Draw pending' : M.gPlayed >= M.gTotal ? 'All played' : `${M.gTotal - M.gPlayed} to play`, short: 'group matches' },
     { label: 'Knockout', value: `${M.kPlayed}/${M.kTotal}`, sub: `${ev.brackets.length} brackets`, short: 'knockout matches' },
   ];
 }
@@ -490,7 +495,8 @@ function DeskHeader({ t, ev, M, ui, setUi, theme, toggleTheme, switchEvent, sync
           <div class="overline" style={{ color: stageColor(M.stage) }}>{STAGE_LABEL[M.stage]}</div>
           <h1>{ev.name}</h1>
           <div class="muted" style={{ marginTop: 12, fontSize: 17 }}>
-            {ev.byes.length} top {ev.byes.length === 1 ? 'seed skips' : 'seeds skip'} the groups · {ev.brackets.length} knockout brackets · draw {ev.draw} of the sheet
+            {ev.byes.length} top {ev.byes.length === 1 ? 'seed skips' : 'seeds skip'} the groups · {ev.brackets.length} knockout {ev.brackets.length === 1 ? 'bracket' : 'brackets'}
+            {ev.groups.length > 0 && ` · ${DRAW_LABEL[ev.draw]}`}
           </div>
           <div class="stat-chips">
             {statsOf(M, ev).map((s) => (
@@ -662,12 +668,20 @@ function GroupsView({ t, ev, M, ui, setUi, sel, openProfile, desk }: { t: Tourna
   const byBracket = new Map<string, number[]>();
   M.dest.forEach((id, rank) => byBracket.set(id, [...(byBracket.get(id) ?? []), rank].sort((a, b) => a - b)));
   const groups = desk || !ui.g ? ev.groups : ev.groups.filter((g) => g.label === ui.g);
+  const pts = hasPoints(ev);
+  if (!ev.groups.length) {
+    const empty = <div class={`empty ${desk ? '' : 'glass'}`} style={{ borderRadius: 28 }}>The groups haven't been drawn yet. They appear here as soon as the sheet has them.</div>;
+    return desk ? <div class="panel glass streak">{empty}</div> : <div class="view">{empty}</div>;
+  }
   const body = (
     <>
       <div class={`legend ${desk ? 'inner' : 'glass'}`}>
         <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 12 }}>
           <div style={{ fontSize: 15, fontWeight: 700 }}>Where each finish goes</div>
           <div class="mono faint" style={{ fontSize: 12 }}>{M.gPlayed}/{M.gTotal} played</div>
+        </div>
+        <div class="faint" style={{ fontSize: 12, marginTop: 2 }}>
+          {DRAW_LABEL[ev.draw]}{ev.drawBy === 'results' ? ' · the draw with results entered' : ''}
         </div>
         <div class="legend-items">
           {ev.brackets.map((b) => (
@@ -688,18 +702,26 @@ function GroupsView({ t, ev, M, ui, setUi, sel, openProfile, desk }: { t: Tourna
       )}
       <div class="groups-grid" style={desk ? { marginTop: 18 } : {}}>
         {groups.map((g) => {
-          const total = (g.players.length * (g.players.length - 1)) / 2;
-          const played = g.players.reduce((a, p) => a + p.wins, 0);
+          const total = groupTotal(g);
+          const played = groupPlayed(g);
           return (
             <div class={`group-card ${desk ? 'inner' : 'glass'}`} key={g.name}>
               <div class="group-head">
                 <div style={{ fontSize: 17, fontWeight: 700 }}>{g.name}</div>
                 <div class="mono faint" style={{ fontSize: 12 }}>{played}/{total} played</div>
               </div>
+              <div class={`group-cols ${pts ? 'with-pts' : ''}`} aria-hidden="true">
+                <span />
+                <span />
+                <span>Rating</span>
+                <span>W–L</span>
+                {pts && <span>Pts</span>}
+                <span>To</span>
+              </div>
               {g.players.map((p) => {
                 const d = M.dest.get(p.rank);
                 return (
-                  <button key={p.name} class={`group-row ${sel === p.name ? 'sel' : ''}`} onClick={() => openProfile(p.name)}>
+                  <button key={p.name} class={`group-row ${pts ? 'with-pts' : ''} ${sel === p.name ? 'sel' : ''}`} onClick={() => openProfile(p.name)}>
                     <span class={`rank-dot mono ${p.rank === 1 && played > 0 ? 'lead' : ''}`}>{p.rank}</span>
                     <span style={{ minWidth: 0 }}>
                       <span class="ell" style={{ display: 'block', fontSize: 15, fontWeight: 600 }}>{p.name}</span>
@@ -707,10 +729,12 @@ function GroupsView({ t, ev, M, ui, setUi, sel, openProfile, desk }: { t: Tourna
                     </span>
                     <span class="mono muted" style={{ fontSize: 13, textAlign: 'right' }}>{rating(t, p.name)}</span>
                     <span class="mono" style={{ fontSize: 14, fontWeight: 600, textAlign: 'right' }}>{p.wins}–{p.losses}</span>
-                    <span class={`badge b-${d ?? 'none'}`} style={{ width: 28, height: 28, borderRadius: 9, fontSize: 12 }}>{d ?? '–'}</span>
+                    {pts && <span class="mono" style={{ fontSize: 14, fontWeight: 600, textAlign: 'right', color: 'var(--text-2)' }}>{p.points ?? '–'}</span>}
+                    <span class={`badge b-${d ?? 'none'}`} style={{ width: 28, height: 28, borderRadius: 9, fontSize: 12 }} title={d ? `Goes to bracket ${d}` : undefined}>{d ?? '–'}</span>
                   </button>
                 );
               })}
+              {g.computed && <div class="faint" style={{ fontSize: 11, padding: '4px 6px 6px' }}>Standings worked out from the results because the sheet's standings weren't available.</div>}
               {g.matches.length > 0 && <MatchList matches={g.matches} me={sel} onPick={openProfile} />}
             </div>
           );
@@ -953,6 +977,7 @@ function PlayersView({ t, M, ui, setUi, desk, sel, openProfile }: { t: Tournamen
     const s = M.spot.get(name);
     const f = finishOf(M.ev, name);
     if (s) return `Group ${s.group.label} · ${ord(s.player.rank)}${M.dest.get(s.player.rank) ? ` → ${M.dest.get(s.player.rank)}` : ''}`;
+    if (!M.ev.byes.includes(name)) return 'Not drawn yet';
     return `Group-stage bye${f.bracket ? ` → ${f.bracket.id}` : ''}`;
   };
   if (desk) {
@@ -974,7 +999,7 @@ function PlayersView({ t, M, ui, setUi, desk, sel, openProfile }: { t: Tournamen
                     <span class="ell" style={{ fontSize: 15, fontWeight: 650 }}>{name}</span>
                   </span>
                   <span class="mono" style={{ fontSize: 14, fontWeight: 600, textAlign: 'right' }}>{rating(t, name)}</span>
-                  <span class="mono muted" style={{ fontSize: 13, textAlign: 'right' }}>{s?.player.seed ?? 'Bye'}</span>
+                  <span class="mono muted" style={{ fontSize: 13, textAlign: 'right' }}>{s ? s.player.seed ?? '—' : M.ev.byes.includes(name) ? 'Bye' : '—'}</span>
                   <span class="muted ell" style={{ fontSize: 13 }}>{groupText(name)}</span>
                   <span class="mono" style={{ fontSize: 13, textAlign: 'right' }}>{s ? `${s.player.wins}–${s.player.losses}` : '—'}</span>
                   <span><span class={`pill fin-${f.kind}`} style={{ textTransform: 'none', letterSpacing: 0, fontSize: 12 }}>{f.short}</span></span>
@@ -1064,8 +1089,10 @@ function Profile({ t, M, ev, name, open, close }: { t: Tournament; M: EventModel
   const champ = f.kind === 'champ';
   const lp = formatDate(info?.lastPlayed ?? null);
   const tags = [info?.province, info?.gender ? `Gender ${info.gender}` : '', s ? `Seed ${s.player.seed ?? '—'}` : ev.byes.includes(name) ? 'Group-stage bye' : '', info?.temp ? 'Temp' : ''].filter(Boolean);
-  const groupPlayed = s ? s.group.players.reduce((a, x) => a + x.wins, 0) : 0;
-  const groupTotal = s ? (s.group.players.length * (s.group.players.length - 1)) / 2 : 0;
+  const gPlayed = s ? groupPlayed(s.group) : 0;
+  const gTotal = s ? groupTotal(s.group) : 0;
+  const pts = hasPoints(ev);
+  const cols = pts ? '22px minmax(0,1fr) 46px 36px 30px' : '22px minmax(0,1fr) 46px 36px';
   return (
     <>
       <button class={`scrim ${open ? 'open' : ''}`} aria-label="Close player profile" tabIndex={open ? 0 : -1} onClick={close} />
@@ -1098,7 +1125,7 @@ function Profile({ t, M, ev, name, open, close }: { t: Tournament; M: EventModel
             <div class="tile"><div class="faint" style={{ fontSize: 12, fontWeight: 600 }}>Rating</div><span class="mono">{info?.rating ?? '—'}</span><div class="faint" style={{ fontSize: 12 }}>{info?.temp ? 'Temp flag on' : 'From the ranking list'}</div></div>
             <div class="tile"><div class="faint" style={{ fontSize: 12, fontWeight: 600 }}>List rank</div><span class="mono">{info?.listRank ? `#${info.listRank}` : '—'}</span><div class="faint" style={{ fontSize: 12 }}>{info?.listRank ? `of ${t.rankCount} players` : 'Not on the list'}</div></div>
             <div class="tile"><div class="faint" style={{ fontSize: 12, fontWeight: 600 }}>Last played</div><span class="mono">{lp.main}</span><div class="faint" style={{ fontSize: 12 }}>{lp.year}</div></div>
-            <div class="tile"><div class="faint" style={{ fontSize: 12, fontWeight: 600 }}>{s ? s.group.name : 'Group stage'}</div><span class="mono">{s ? `${ord(s.player.rank)} · ${s.player.wins}–${s.player.losses}` : 'Bye'}</span><div class="faint" style={{ fontSize: 12 }}>{s ? (M.dest.get(s.player.rank) ? `Into bracket ${M.dest.get(s.player.rank)}` : 'Group stage') : 'Skipped the groups'}</div></div>
+            <div class="tile"><div class="faint" style={{ fontSize: 12, fontWeight: 600 }}>{s ? s.group.name : 'Group stage'}</div><span class="mono">{s ? `${ord(s.player.rank)} · ${s.player.wins}–${s.player.losses}` : ev.byes.includes(name) ? 'Bye' : '—'}</span><div class="faint" style={{ fontSize: 12 }}>{s ? (M.dest.get(s.player.rank) ? `Into bracket ${M.dest.get(s.player.rank)}` : 'Group stage') : ev.byes.includes(name) ? 'Skipped the groups' : 'Not drawn yet'}</div></div>
           </div>
           {rrB?.table && (
             <>
@@ -1128,14 +1155,15 @@ function Profile({ t, M, ev, name, open, close }: { t: Tournament; M: EventModel
           )}
           {s && (
             <>
-              <div class="section-head" style={{ padding: 0, marginTop: 22 }}><h3 style={{ fontSize: 17 }}>{s.group.name}</h3><span class="mono faint" style={{ fontSize: 12 }}>{groupPlayed}/{groupTotal} played</span></div>
+              <div class="section-head" style={{ padding: 0, marginTop: 22 }}><h3 style={{ fontSize: 17 }}>{s.group.name}</h3><span class="mono faint" style={{ fontSize: 12 }}>{gPlayed}/{gTotal} played</span></div>
               <div style={{ marginTop: 10, borderRadius: 20, padding: '2px 12px', background: 'var(--chip)', border: '1px solid var(--chip-border)' }}>
                 {s.group.players.map((gp, i) => (
-                  <div key={gp.name} style={{ display: 'grid', gridTemplateColumns: '22px minmax(0,1fr) 46px 36px', alignItems: 'center', gap: 10, minHeight: 46, borderTop: i ? '1px solid var(--hair)' : '1px solid transparent' }}>
+                  <div key={gp.name} style={{ display: 'grid', gridTemplateColumns: cols, alignItems: 'center', gap: 10, minHeight: 46, borderTop: i ? '1px solid var(--hair)' : '1px solid transparent' }}>
                     <span class="mono faint" style={{ fontSize: 13 }}>{gp.rank}</span>
                     <span class="ell" style={{ fontSize: 14, fontWeight: gp.name === name ? 700 : 500, color: gp.name === name ? 'var(--accent-text)' : 'var(--text)' }}>{gp.name}</span>
                     <span class="mono faint" style={{ fontSize: 12, textAlign: 'right' }}>{rating(t, gp.name)}</span>
                     <span class="mono" style={{ fontSize: 13, fontWeight: 600, textAlign: 'right' }}>{gp.wins}–{gp.losses}</span>
+                    {pts && <span class="mono muted" style={{ fontSize: 13, fontWeight: 600, textAlign: 'right' }} title="Match points">{gp.points ?? '–'}</span>}
                   </div>
                 ))}
               </div>
@@ -1161,6 +1189,7 @@ function MatchList({ matches, me, onPick }: { matches: GroupMatch[]; me?: string
     <div class="mlist">
       {matches.map((m) => {
         const done = !!m.winner;
+        const games = m.games ?? [];
         const side = (n: string, sets: number | null) => (
           <button class={`ml-name ${m.winner === n ? 'win' : done ? 'lose' : ''} ${me === n ? 'me' : ''}`} disabled={!onPick} onClick={() => onPick?.(n)}>
             <span class="ell">{n}</span>
@@ -1173,6 +1202,15 @@ function MatchList({ matches, me, onPick }: { matches: GroupMatch[]; me?: string
             {side(m.a, m.aSets)}
             <span class="faint ml-vs">vs</span>
             {side(m.b, m.bSets)}
+            {games.length > 0 && (
+              <div class="ml-games" aria-label={`Games: ${games.map(([a, b]) => `${a}–${b}`).join(', ')}`}>
+                {games.map(([a, b], i) => (
+                  <span class="ml-game mono" key={i}>
+                    <b class={a > b ? 'w' : ''}>{a}</b>–<b class={b > a ? 'w' : ''}>{b}</b>
+                  </span>
+                ))}
+              </div>
+            )}
           </div>
         );
       })}
@@ -1183,6 +1221,7 @@ function MatchList({ matches, me, onPick }: { matches: GroupMatch[]; me?: string
 function RoundRobin({ t, M, b, sel, onPick, desk }: { t: Tournament; M: EventModel; b: Bracket; sel: string; onPick: (n: string) => void; desk: boolean }) {
   const table = b.table!;
   const played = bracketPlayed(b) > 0;
+  const pts = table.players.some((p) => p.points != null);
   return (
     <div class="rr" style={desk ? { marginTop: 22 } : {}}>
       {b.champion && (
@@ -1197,9 +1236,16 @@ function RoundRobin({ t, M, b, sel, onPick, desk }: { t: Tournament; M: EventMod
       )}
       <div class="rr-grid">
         <div class={`group-card ${desk ? 'inner' : 'glass'}`}>
-          <div class="group-head"><div style={{ fontSize: 17, fontWeight: 700 }}>Standings</div><div class="mono faint" style={{ fontSize: 12 }}>W–L</div></div>
+          <div class="group-head"><div style={{ fontSize: 17, fontWeight: 700 }}>Standings</div><div class="mono faint" style={{ fontSize: 12 }}>{table.players.length} players</div></div>
+          <div class={`group-cols rr-cols ${pts ? 'with-pts' : ''}`} aria-hidden="true">
+            <span />
+            <span />
+            <span>Rating</span>
+            <span>W–L</span>
+            {pts && <span>Pts</span>}
+          </div>
           {table.players.map((p) => (
-            <button key={p.name} class={`group-row ${sel === p.name ? 'sel' : ''}`} style={{ gridTemplateColumns: '28px minmax(0, 1fr) 44px 38px' }} onClick={() => onPick(p.name)}>
+            <button key={p.name} class={`group-row rr-row ${pts ? 'with-pts' : ''} ${sel === p.name ? 'sel' : ''}`} onClick={() => onPick(p.name)}>
               <span class={`rank-dot mono ${p.rank === 1 && played ? 'lead' : ''}`}>{p.rank}</span>
               <span style={{ minWidth: 0 }}>
                 <span class="ell" style={{ display: 'block', fontSize: 15, fontWeight: 600 }}>{p.name}</span>
@@ -1207,8 +1253,10 @@ function RoundRobin({ t, M, b, sel, onPick, desk }: { t: Tournament; M: EventMod
               </span>
               <span class="mono muted" style={{ fontSize: 13, textAlign: 'right' }}>{rating(t, p.name)}</span>
               <span class="mono" style={{ fontSize: 14, fontWeight: 600, textAlign: 'right' }}>{p.wins}–{p.losses}</span>
+              {pts && <span class="mono" style={{ fontSize: 14, fontWeight: 600, textAlign: 'right', color: 'var(--text-2)' }}>{p.points ?? '–'}</span>}
             </button>
           ))}
+          {table.computed && <div class="faint" style={{ fontSize: 11, padding: '4px 6px 6px' }}>Standings worked out from the results because the sheet's standings weren't available.</div>}
         </div>
         <div class={`group-card ${desk ? 'inner' : 'glass'}`}>
           <div class="group-head"><div style={{ fontSize: 17, fontWeight: 700 }}>Matches</div><div class="mono faint" style={{ fontSize: 12 }}>{bracketPlayed(b)}/{bracketTotal(b)} played</div></div>

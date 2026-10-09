@@ -17,7 +17,7 @@ Browser ◀── static app (dist/client) ◀── /api/tournament ◀──�
 - `src/shared/parse.ts` turns the sheet tabs into JSON. It reads:
   - the ranking list tab (Serial, Name, Prov, Gender, Rating, Period, Last Played, Temp);
   - every event tab: the roster (A:E), both group draws (the `Group` columns), and the `GROUP X - …` bracket blocks.
-- **Which group draw is official** is detected automatically. It's the draw whose groups match the `(Group N)` labels in the bracket.
+- **Which group draw is used.** Every event tab has two draws: the serpentine draw first, then the seeded pot draw. The app uses the one with results entered and ignores the other. If neither has results yet (or both do), it uses the draw that the bracket `(Group N)` labels match, and the serpentine draw as a last resort. `/api/health` shows the choice for each event.
 - **Bracket slots** are found from the bracket layout, so pending rounds still show "Winner of …" placeholders.
 - **Before the sheet is connected**, the app serves `src/data/snapshot.grids.json` (built from an uploaded workbook).
 
@@ -33,9 +33,12 @@ The sheet must be shared as **Anyone with the link → Viewer**. Then add these 
 
 ### Sheet rules the app follows
 
-- Tab 1 is the ranking list. Every other tab is an event; tabs with no registered players are not published.
-- Group tables can carry `Match Order` ("Seed 1 vs Seed 3") and `Sets (P1-P2)` ("3-1") columns; results show under each group. Tip: format the Sets columns as **Plain text** so Sheets doesn't turn "3-1" into a date (dates are read back as month-day, so they still work).
-- Brackets are `GROUP X - Name (...)` blocks, and any of them (A, B, C, D…) can be a knockout or a round-robin. A block is a round-robin when its title says `(Round-Robin)` or when it has a Seed / Wins / Losses table instead of round headers; it is then shown as standings plus results.
+- Tab 1 is the ranking list. Every other tab is an event; tabs with no registered players are not published. A tab with players but no draw yet is shown as "Draw pending".
+- Group tables: `Group`, `Event Seed`, `Group Seed`, `Name`, `Province`, `Gender`, `Rating`, `W`, `L`, `Pts`, `Rank`, then `Match` ("Seed 1 vs Seed 3"), `Sets` ("3-1") and `G1`–`G5` ("11-7", first player's points first). The header row can repeat above every group. Older names (`Wins`, `Losses`, `Match Order`, `Sets (P1-P2)`) still work.
+- The sheet's W / L / Pts / Rank are official. If the standings formula shows "Loading…" or an error, the app works them out from the results using the ITTF rules (2 points a win, 1 a loss, then head-to-head), and `/api/health` says so. It also warns when the sheet's W–L don't match the results entered.
+- Tip: format the Sets and G1–G5 columns as **Plain text** so Sheets doesn't turn "3-1" into a date (dates are read back as month-day, so they still work).
+- Brackets are `GROUP X - Name (...)` blocks, and any of them (A, B, C, D…) can be a knockout or a round-robin. A block is a round-robin when its title says `(Round-Robin)` or when it has a Seed / W / L table instead of round headers; it is then shown as standings plus results.
+- Doubles: write a team as `Name / Name` in the Name column, or add a `Partner` column next to it. The team's rating is the Rating on the sheet.
 
 `/api/health` shows which source is active and the last sync error, if any.
 

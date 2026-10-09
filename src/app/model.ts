@@ -18,10 +18,33 @@ export interface EventModel {
   stage: Stage;
 }
 
-export type Stage = 'done' | 'pre' | 'live' | 'next' | 'groups';
+export type Stage = 'done' | 'pre' | 'live' | 'next' | 'groups' | 'draw';
 
 export const isBye = (m: Match) => m.a.bye || m.b.bye;
-export const isPlayed = (m: Match) => !isBye(m) && m.a.score != null && m.b.score != null;
+/** A knockout match counts as played once someone advanced, or the scores are in and not level. */
+export const isPlayed = (m: Match) =>
+  !isBye(m) && (!!m.winner || (m.a.score != null && m.b.score != null && m.a.score !== m.b.score));
+
+/** Group matches with a result. Older sheets without match rows count the wins instead. */
+export function groupPlayed(g: Group): number {
+  if (g.matches.length) return g.matches.filter((m) => m.winner).length;
+  return g.players.reduce((a, p) => a + p.wins, 0);
+}
+
+/** Matches a group plays: everyone meets everyone once. */
+export function groupTotal(g: Group): number {
+  const n = g.players.length;
+  return Math.max(g.matches.length, (n * (n - 1)) / 2);
+}
+
+/** Whether the sheet gives match points (the Pts column) for this event's tables. */
+export function hasPoints(ev: EventData): boolean {
+  const tables = [...ev.groups, ...ev.brackets.flatMap((b) => (b.table ? [b.table] : []))];
+  return tables.some((g) => g.players.some((p) => p.points != null));
+}
+
+/** The two group draws on every event tab. */
+export const DRAW_LABEL: Record<1 | 2, string> = { 1: 'Serpentine draw', 2: 'Seeded pot draw' };
 
 export function bracketTotal(b: Bracket): number {
   if (b.format === 'roundrobin') {
@@ -50,12 +73,17 @@ export function eventModel(ev: EventData): EventModel {
       if (s && !dest.has(s.player.rank)) dest.set(s.player.rank, b.id);
     });
   });
-  const people = [...ev.byes, ...ev.groups.flatMap((g) => g.players.map((p) => p.name))];
-  const gTotal = ev.groups.reduce((a, g) => a + (g.players.length * (g.players.length - 1)) / 2, 0);
-  const gPlayed = ev.groups.reduce((a, g) => a + g.players.reduce((s, p) => s + p.wins, 0), 0);
+  const seen = new Set<string>();
+  const people = [...ev.byes, ...ev.groups.flatMap((g) => g.players.map((p) => p.name)), ...ev.roster.map((p) => p.name)].filter((n) => {
+    if (seen.has(n)) return false;
+    seen.add(n);
+    return true;
+  });
+  const gTotal = ev.groups.reduce((a, g) => a + groupTotal(g), 0);
+  const gPlayed = ev.groups.reduce((a, g) => a + groupPlayed(g), 0);
   const kTotal = ev.brackets.reduce((a, b) => a + bracketTotal(b), 0);
   const kPlayed = ev.brackets.reduce((a, b) => a + bracketPlayed(b), 0);
-  let stage: Stage = 'groups';
+  let stage: Stage = ev.groups.length || ev.brackets.length ? 'groups' : 'draw';
   if (ev.brackets.length && ev.brackets.every((b) => b.champion)) stage = 'done';
   else if (ev.brackets.some((b) => b.preliminary)) stage = 'pre';
   else if (kPlayed > 0) stage = 'live';
@@ -69,6 +97,7 @@ export const STAGE_LABEL: Record<Stage, string> = {
   live: 'Knockout live',
   next: 'Knockout up next',
   groups: 'Group stage',
+  draw: 'Draw pending',
 };
 
 export const ord = (n: number) => {
@@ -153,8 +182,28 @@ export interface Finish {
   bracket: Bracket | null;
 }
 
-const IN_ROUND: Record<string, string> = { R1: 'Round 1', R2: 'Round 2', R3: 'Round 3', QF: 'the quarterfinals', SF: 'the semifinals', Final: 'the final' };
-const NEXT_ROUND: Record<string, string> = { R1: 'Round 1', R2: 'Round 2', R3: 'Round 3', QF: 'Quarterfinal', SF: 'Semifinal', Final: 'Final' };
+const IN_ROUND: Record<string, string> = {
+  R1: 'Round 1',
+  R2: 'Round 2',
+  R3: 'Round 3',
+  R64: 'the round of 64',
+  R32: 'the round of 32',
+  R16: 'the round of 16',
+  QF: 'the quarterfinals',
+  SF: 'the semifinals',
+  Final: 'the final',
+};
+const NEXT_ROUND: Record<string, string> = {
+  R1: 'Round 1',
+  R2: 'Round 2',
+  R3: 'Round 3',
+  R64: 'Round of 64',
+  R32: 'Round of 32',
+  R16: 'Round of 16',
+  QF: 'Quarterfinal',
+  SF: 'Semifinal',
+  Final: 'Final',
+};
 
 export function finishOf(ev: EventData, name: string): Finish {
   const rr = ev.brackets.find((b) => b.format === 'roundrobin' && b.table?.players.some((p) => p.name === name));
