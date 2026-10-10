@@ -1,4 +1,4 @@
-import { DRAW_NAME, buildTournament, fingerprint } from '../shared/parse';
+import { buildTournament, fingerprint } from '../shared/parse';
 import type { EventData, Tournament, Workbook } from '../shared/types';
 import snapshot from '../data/snapshot.grids.json';
 import { fetchWorkbook, sheetMode, type SheetEnv } from './sheets';
@@ -9,16 +9,24 @@ export interface Env extends SheetEnv {
 }
 
 // Bump when the JSON shape changes, so a new deploy never serves data cached by the old one.
-const KEY = 'tournament:v2';
+const KEY = 'tournament:v3';
 // The previous version's data, served only if the first sync after a deploy fails.
-const PREVIOUS_KEY = 'tournament:v1';
+const PREVIOUS_KEY = 'tournament:v2';
 const MEMO_MS = 15_000;
 
 const DRAW_REASON: Record<EventData['drawBy'], string> = {
+  single: 'the only draw on the tab',
   results: 'the one with results entered',
   brackets: 'matches the bracket labels',
   default: 'default',
 };
+
+/** How /api/health describes an event's group draw. */
+function describeDraw(e: EventData): string {
+  if (!e.groups.length) return 'not drawn yet';
+  const name = e.drawName ? `${e.drawName} draw` : 'group draw (type not written on the sheet)';
+  return `${name}, ${DRAW_REASON[e.drawBy] ?? 'previous version'}`;
+}
 
 interface Stored {
   body: string;
@@ -146,7 +154,7 @@ export default {
           id: e.id,
           name: e.name,
           players: e.roster.length,
-          groupDraw: e.groups.length ? `${DRAW_NAME[e.draw]} (${DRAW_REASON[e.drawBy] ?? 'previous version'})` : 'not drawn yet',
+          groupDraw: describeDraw(e),
           groups: e.groups.length,
           brackets: e.brackets.map((b) => `${b.id} ${b.format}`),
         })),

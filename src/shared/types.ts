@@ -44,16 +44,19 @@ export interface EventData {
   roster: RosterEntry[];
   /** Players who skip the group stage (Group_Stage_Bye = TRUE). */
   byes: string[];
-  /**
-   * Which of the two group draws on the tab is in use: 1 is the serpentine
-   * draw, 2 the seeded pot draw.
-   */
+  /** Which group draw block on the tab is in use (1 = the first "Group" column). */
   draw: 1 | 2;
   /**
-   * Why that draw was chosen: it is the only one with entered results, the
-   * bracket "(Group N)" labels match it, or neither told them apart.
+   * The draw's name, when the sheet tells: written in the draw's header row,
+   * or by position on tabs that still carry two draws side by side.
    */
-  drawBy: 'results' | 'brackets' | 'default';
+  drawName: 'serpentine' | 'seeded pot' | null;
+  /**
+   * Why that draw was chosen: it is the only draw on the tab, the only one
+   * with results entered, the one the bracket "(Group N)" labels match, or
+   * neither told two draws apart.
+   */
+  drawBy: 'single' | 'results' | 'brackets' | 'default';
   groups: Group[];
   brackets: Bracket[];
 }
@@ -90,7 +93,12 @@ export interface GroupMatch {
   bSets: number | null;
   /** Game scores from the G1–G5 columns, as [a, b] points. */
   games: [number, number][];
+  /** Set once a player has 3 games (best of 5), or the match is a walkover. */
   winner: string | null;
+  /** A walkover ("3-0 WO"): the loser gets no match point. */
+  wo?: boolean;
+  /** Games entered but nobody has 3 yet. The sheet's standings already count the leader. */
+  live?: boolean;
 }
 
 export interface GroupPlayer {
@@ -122,6 +130,8 @@ export interface Bracket {
   preliminary: boolean;
   champion: string | null;
   rounds: Round[];
+  /** Play-off 3/4 between the semifinal losers (knockout brackets from Tournament Tools). */
+  thirdPlace?: Match;
 }
 
 export interface Round {

@@ -43,20 +43,40 @@ export function hasPoints(ev: EventData): boolean {
   return tables.some((g) => g.players.some((p) => p.points != null));
 }
 
-/** The two group draws on every event tab. */
-export const DRAW_LABEL: Record<1 | 2, string> = { 1: 'Serpentine draw', 2: 'Seeded pot draw' };
+/** "Serpentine draw" / "Seeded pot draw", or null when the sheet doesn't say which draw was run. */
+export function drawLabel(ev: EventData): string | null {
+  if (ev.drawName === 'serpentine') return 'Serpentine draw';
+  if (ev.drawName === 'seeded pot') return 'Seeded pot draw';
+  return null;
+}
+
+/** The play-off 3/4 is a real match once a bracket has four or more players (otherwise a semifinal loser is a bye). */
+const playoffCounts = (b: Bracket) => !!b.thirdPlace && b.players >= 4;
 
 export function bracketTotal(b: Bracket): number {
   if (b.format === 'roundrobin') {
     const n = b.table?.players.length ?? 0;
     return (n * (n - 1)) / 2;
   }
-  return Math.max(0, b.players - 1);
+  return Math.max(0, b.players - 1) + (playoffCounts(b) ? 1 : 0);
 }
 
 export function bracketPlayed(b: Bracket): number {
   if (b.format === 'roundrobin') return (b.table?.matches ?? []).filter((m) => m.winner).length;
-  return b.rounds.reduce((s, r) => s + r.matches.filter(isPlayed).length, 0);
+  const rounds = b.rounds.reduce((s, r) => s + r.matches.filter(isPlayed).length, 0);
+  return rounds + (b.thirdPlace && playoffCounts(b) && isPlayed(b.thirdPlace) ? 1 : 0);
+}
+
+/** A bracket is finished when it has a champion and its play-off 3/4 (if any) is settled. */
+export function bracketDone(b: Bracket): boolean {
+  if (!b.champion) return false;
+  const po = b.thirdPlace;
+  return !po || !playoffCounts(b) || !!po.winner || isBye(po);
+}
+
+/** Group matches being played right now (games entered, nobody has 3 yet). */
+export function groupLive(g: Group): number {
+  return g.matches.filter((m) => m.live).length;
 }
 
 export function eventModel(ev: EventData): EventModel {
@@ -84,7 +104,7 @@ export function eventModel(ev: EventData): EventModel {
   const kTotal = ev.brackets.reduce((a, b) => a + bracketTotal(b), 0);
   const kPlayed = ev.brackets.reduce((a, b) => a + bracketPlayed(b), 0);
   let stage: Stage = ev.groups.length || ev.brackets.length ? 'groups' : 'draw';
-  if (ev.brackets.length && ev.brackets.every((b) => b.champion)) stage = 'done';
+  if (ev.brackets.length && ev.brackets.every(bracketDone)) stage = 'done';
   else if (ev.brackets.some((b) => b.preliminary)) stage = 'pre';
   else if (kPlayed > 0) stage = 'live';
   else if (gTotal > 0 && gPlayed >= gTotal) stage = 'next';
@@ -147,13 +167,20 @@ export interface PlayerPath {
 
 export function feederLabel(b: Bracket, ri: number, mi: number, side: 'a' | 'b'): string {
   if (ri === 0) return 'To be decided';
+  if (ri >= b.rounds.length) return `Loser of SF · M${side === 'a' ? 1 : 2}`;
   return `Winner of ${b.rounds[ri - 1].short} · M${2 * mi + (side === 'a' ? 1 : 2)}`;
+}
+
+/** The play-off 3/4 shown as one more round after the final. */
+export function playoffRound(b: Bracket): Round | null {
+  return b.thirdPlace ? { name: 'Play-off 3/4', short: '3rd', matches: [b.thirdPlace] } : null;
 }
 
 export function pathOf(ev: EventData, name: string): PlayerPath | null {
   for (const bracket of ev.brackets) {
     const steps: Step[] = [];
-    bracket.rounds.forEach((round, ri) =>
+    const po = playoffRound(bracket);
+    [...bracket.rounds, ...(po ? [po] : [])].forEach((round, ri) =>
       round.matches.forEach((match, mi) => {
         const mine = match.a.name === name ? 'a' : match.b.name === name ? 'b' : null;
         if (!mine) return;
@@ -172,7 +199,7 @@ export function pathOf(ev: EventData, name: string): PlayerPath | null {
   return null;
 }
 
-export type FinishKind = 'champ' | 'runner' | 'out' | 'alive' | 'none';
+export type FinishKind = 'champ' | 'runner' | 'third' | 'out' | 'alive' | 'none';
 
 export interface Finish {
   kind: FinishKind;
@@ -219,6 +246,12 @@ export function finishOf(ev: EventData, name: string): Finish {
   const last = p.steps[p.steps.length - 1];
   const wins = p.steps.filter((s) => s.res === 'won').length;
   const b = p.bracket;
+  if (last.round.short === '3rd') {
+    if (last.res === 'won') return { kind: 'third', short: '3rd place', long: '3rd place', sub: `Won the play-off 3/4 ${last.my}–${last.os}`, bracket: b };
+    if (last.res === 'bye') return { kind: 'third', short: '3rd place', long: '3rd place', sub: 'No play-off opponent', bracket: b };
+    if (last.res === 'lost') return { kind: 'out', short: '4th', long: '4th place', sub: `Lost the play-off 3/4 to ${last.opp} ${last.my}–${last.os}`, bracket: b };
+    return { kind: 'alive', short: 'Play-off', long: 'Playing for 3rd place', sub: `Play-off 3/4 vs ${last.oppLabel}`, bracket: b };
+  }
   if (b.champion === name) {
     return { kind: 'champ', short: 'Champion', long: `${b.label} champion`, sub: `${wins} knockout ${wins === 1 ? 'win' : 'wins'} without a loss`, bracket: b };
   }

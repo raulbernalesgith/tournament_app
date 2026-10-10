@@ -7,6 +7,7 @@ import { buildTournament, fingerprint, ittfOrder, parseSets } from '../src/share
 import type { Cell, Grid, GroupMatch, GroupPlayer, Workbook } from '../src/shared/types';
 import { parseCsv } from '../src/worker/csv';
 import { parseTabs, tabsFromHtml } from '../src/worker/sheets';
+import { put as putAt, v5Tab } from './v5';
 
 const SRC = { kind: 'snapshot', label: 'test' } as const;
 const build = (wb: Workbook) => buildTournament(wb, SRC, new Date('2026-10-05T00:00:00Z'));
@@ -362,38 +363,22 @@ describe('standings fallback', () => {
     );
   });
 
-  it('reads an event played best of three', () => {
+  it('shows a match being entered as live until someone has 3 games (best of 5)', () => {
     const wb = clone(wb1009);
-    const g = wb.sheets['Active-4-Life'];
-    // Every result in the event becomes best of three: 3-0 -> 2-0, 3-1 / 3-2 -> 2-1, and so on.
-    const bo3 = (v: Cell) => {
-      const m = typeof v === 'string' ? /^(\d)-(\d)$/.exec(v) : null;
-      if (!m) return v;
-      const [a, b] = [Number(m[1]), Number(m[2])];
-      return a > b ? `2-${Math.min(b, 1)}` : `${Math.min(a, 1)}-2`;
-    };
-    g.forEach((row) => row.forEach((v, c) => (row[c] = bo3(v))));
-    const before = build(wb1009 as unknown as Workbook).events[1];
-    const after = build(wb).events[1];
-    expect(after.groups[0].matches.map((m) => [m.aSets, m.bSets, m.winner])).toEqual([
-      [2, 0, 'Sepulveda Dino'],
-      [2, 1, 'Raymundo Irwin'],
-      [2, 1, 'Sepulveda Dino'],
-    ]);
-    expect(after.groups.flatMap((gr) => gr.matches.map((m) => m.winner))).toEqual(before.groups.flatMap((gr) => gr.matches.map((m) => m.winner)));
-    expect(after.brackets[1].champion).toBe('Zahedi Hamid');
-  });
-
-  it('does not take a half-entered best-of-five match for a result', () => {
-    const wb = clone(wb1009);
-    put(wb.sheets['Open_Singles'], 'T2', '2-0');
-    const g1 = build(wb).events[0].groups[0];
-    expect(g1.matches[0]).toMatchObject({ aSets: 2, bSets: 0, winner: null });
+    const g = wb.sheets['Open_Singles'];
+    put(g, 'T2', '2-1');
+    put(g, 'X2', null); // games so far: 11-7, 8-11, 11-2
+    const t = build(wb);
+    const g1 = t.events[0].groups[0];
+    expect(g1.matches[0]).toMatchObject({ aSets: 2, bSets: 1, winner: null, live: true });
+    expect(g1.matches[0].games).toHaveLength(3);
+    // The sheet's standings count the leader already, so W–L still agree: no warning.
+    expect(t.warnings).toEqual(['Beginners: "John Doe" is not on the ranking list']);
 
     const fresh = clone(wb1009);
     clearSerpentineResults(fresh.sheets['Open_Singles']);
     put(fresh.sheets['Open_Singles'], 'T2', '2-0');
-    expect(build(fresh).events[0].groups[0].matches[0].winner).toBeNull();
+    expect(build(fresh).events[0].groups[0].matches[0]).toMatchObject({ winner: null, live: true });
   });
 });
 
@@ -425,23 +410,33 @@ describe('event tabs', () => {
   const rankings = (wb1009 as unknown as Workbook).sheets['Canada_Rankings'];
 
   it('publishes a doubles tab with registered teams, before any draw', () => {
+    // Tournament Tools reads one name column, so a team is written "Name / Name" in it.
     const doubles: Grid = [
-      ['Name', 'Partner', 'Province', 'Gender', 'Rating', 'Group_Stage_Bye'],
-      ['Lehmann Matthew', 'ZHANG Tian-Terry', 'MB', 'M', 5369, false],
-      ['Bernales Raul', 'Somebody New', 'MB', 'M', 1500, false],
-      [null, null, null, null, null, false],
-    ];
-    const oneCell: Grid = [
       ['Name', 'Province', 'Gender', 'Rating', 'Group_Stage_Bye'],
-      ['Oyewo BJ / Palad Dilbert', 'MB', 'M', 2501, false],
+      ['Lehmann Matthew / ZHANG Tian-Terry', 'MB', 'M', 5369, false],
+      ['Bernales Raul / Somebody New', 'MB', 'M', 1500, false],
+      [null, null, null, null, false],
     ];
-    const t = build({ title: 'x', sheets: { Canada_Rankings: rankings, Open_Doubles: doubles, Mixed_Doubles: oneCell } });
-    expect(t.events.map((e) => [e.id, e.roster.map((r) => r.name), e.groups.length, e.brackets.length])).toEqual([
-      ['open-doubles', ['Lehmann Matthew / ZHANG Tian-Terry', 'Bernales Raul / Somebody New'], 0, 0],
-      ['mixed-doubles', ['Oyewo BJ / Palad Dilbert'], 0, 0],
+    const t = build({ title: 'x', sheets: { Canada_Rankings: rankings, Open_Doubles: doubles } });
+    expect(t.events.map((e) => [e.id, e.roster.map((r) => r.name), e.groups.length, e.brackets.length, e.drawBy])).toEqual([
+      ['open-doubles', ['Lehmann Matthew / ZHANG Tian-Terry', 'Bernales Raul / Somebody New'], 0, 0, 'single'],
     ]);
     expect(t.players['Lehmann Matthew / ZHANG Tian-Terry']).toMatchObject({ rating: 5369, listRank: null });
     expect(t.warnings).toEqual(['Open Doubles: "Somebody New" is not on the ranking list']);
+  });
+
+  it('finds player list columns the way Tournament Tools does', () => {
+    const wb = clone(wb1009);
+    const b = wb.sheets['Beginners'];
+    b[0][0] = 'Player Name';
+    b[0][1] = 'Club';
+    b[0][2] = 'Sex';
+    b[0][4] = 'Skip Groups';
+    const t = build(wb);
+    const beg = t.events.find((e) => e.id === 'beginners')!;
+    expect(beg.roster[0]).toEqual({ name: 'Dupuis Felix', province: 'MB', gender: 'M', rating: 126, bye: true });
+    expect(beg.byes).toEqual(['Dupuis Felix']);
+    expect(beg).toEqual(build(wb1009 as unknown as Workbook).events.find((e) => e.id === 'beginners'));
   });
 
   it('keeps "&" as part of a single name', () => {
@@ -455,8 +450,11 @@ describe('event tabs', () => {
 
   it('does not take other tabs that list names for events', () => {
     const notes: Grid = [['Name', 'Phone'], ['Someone', '555-0100']];
-    const t = build({ title: 'x', sheets: { Canada_Rankings: rankings, Volunteers: notes } });
+    const schedule: Grid = [['Time', 'Table', 'Group', 'Match'], ['9:00', 1, 'Group 1', 'Seed 1 vs Seed 3'], ['9:20', 2, 'Group 2', 'Seed 2 vs Seed 4']];
+    const helpers: Grid = [['Name', 'Skip lunch?', 'Shift'], ['Someone', 'yes', 'AM']];
+    const t = build({ title: 'x', sheets: { Canada_Rankings: rankings, Volunteers: notes, Schedule: schedule, Helpers: helpers } });
     expect(t.events).toEqual([]);
+    expect(t.warnings).toEqual([]);
   });
 });
 
@@ -470,6 +468,15 @@ describe('cells and tabs', () => {
     expect(parseSets(46082)).toEqual([3, 1]);
     expect(parseSets(46333)).toEqual([11, 7]);
     expect(parseSets(null)).toBeNull();
+    // Read like the sheet's ITTF_STANDINGS: the first score in the cell
+    expect(parseSets('3-0 WO')).toEqual([3, 0]);
+    expect(parseSets('3:1')).toEqual([3, 1]);
+    expect(parseSets(' 3 - 2 ')).toEqual([3, 2]);
+    expect(parseSets('3/1/2026')).toEqual([3, 1]);
+    expect(parseSets('W/O')).toBeNull();
+    // Typed slashes are not scores for ITTF_STANDINGS; only a date Sheets made (with a year) is.
+    expect(parseSets('3/1')).toBeNull();
+    expect(parseSets('11/7')).toBeNull();
   });
 
   it('parses quoted CSV fields and tab specs', () => {
@@ -516,5 +523,124 @@ describe('bracket format is decided per block', () => {
     ]);
     expect(mixed.brackets[2].table!.players).toHaveLength(5);
     expect(mixed.brackets[2].table!.matches).toHaveLength(10);
+  });
+});
+
+describe('Tournament Tools v5 layout (one draw in G:Y, divisions from AB)', () => {
+  const rankings = (wb1009 as unknown as Workbook).sheets['Canada_Rankings'];
+  const tab = (opts: { drawLabel?: string } = {}) => build({ title: 'v5', sheets: { Canada_Rankings: rankings, Club_Open: v5Tab(opts) } });
+  const ev = tab().events[0];
+
+  it('reads the single draw and leaves it unnamed unless the sheet names it', () => {
+    expect([ev.id, ev.draw, ev.drawBy, ev.drawName]).toEqual(['club-open', 1, 'single', null]);
+    expect(tab({ drawLabel: 'Seeded Pot' }).events[0].drawName).toBe('seeded pot');
+    expect(tab({ drawLabel: 'Serpentine' }).events[0].drawName).toBe('serpentine');
+    expect(ev.groups.map((g) => [g.name, g.players.map((p) => p.name)])).toEqual([
+      ['Group 1', ['Bekele Biruk', 'Xie Tianyu', 'Lee Alexus', 'Oyewo BJ']],
+      ['Group 2', ['Tran Jeremy', 'Lu Yi Fan', 'Sepulveda Dino', 'Lee Victoria']],
+    ]);
+  });
+
+  it('reads walkovers and sets left blank the way ITTF_STANDINGS does', () => {
+    const [m1, wo, , blank] = ev.groups[0].matches;
+    expect(m1).toMatchObject({ a: 'Bekele Biruk', b: 'Lee Alexus', aSets: 3, bSets: 1, winner: 'Bekele Biruk' });
+    expect(wo).toEqual({ order: 2, a: 'Xie Tianyu', b: 'Oyewo BJ', aSets: 3, bSets: 0, games: [], winner: 'Xie Tianyu', wo: true });
+    expect(blank).toMatchObject({ a: 'Xie Tianyu', b: 'Lee Alexus', aSets: 3, bSets: 1, winner: 'Xie Tianyu' });
+    expect(blank.live).toBeUndefined();
+    expect(ev.groups[0].players.map((p) => [p.name, p.wins, p.losses, p.points])).toEqual([
+      ['Bekele Biruk', 3, 0, 6],
+      ['Xie Tianyu', 2, 1, 5],
+      ['Lee Alexus', 1, 2, 4],
+      ['Oyewo BJ', 0, 3, 2],
+    ]);
+  });
+
+  it('marks the live match and the unplayed one', () => {
+    const g2 = ev.groups[1].matches;
+    expect(g2[1]).toMatchObject({ a: 'Tran Jeremy', b: 'Sepulveda Dino', aSets: 2, bSets: 0, winner: null, live: true });
+    expect(g2[4]).toEqual({ order: 5, a: 'Lu Yi Fan', b: 'Tran Jeremy', aSets: null, bSets: null, games: [], winner: null });
+    expect(g2.filter((m) => m.winner)).toHaveLength(4);
+  });
+
+  it('has nothing to warn about: the sheet counts live and walkover results the same way', () => {
+    expect(tab().warnings).toEqual([]);
+  });
+
+  it('works standings out like ITTF_STANDINGS when the formula shows Loading…', () => {
+    const g = v5Tab();
+    for (let r = 9; r <= 12; r += 1) for (const c of [13, 14, 15, 16]) putAt(g, r, c, null);
+    putAt(g, 9, 13, 'Loading...');
+    for (let r = 1; r <= 4; r += 1) for (const c of [13, 14, 15, 16]) putAt(g, r, c, null);
+    putAt(g, 1, 13, '#ERROR!');
+    const t = build({ title: 'v5', sheets: { Canada_Rankings: rankings, Club_Open: g } });
+    const [g1, g2] = t.events[0].groups;
+    expect(g1.computed && g2.computed).toBe(true);
+    // Oyewo's walkover loss is worth 0 points; Tran's live 2-0 counts, as on the sheet.
+    expect(g1.players.map((p) => [p.rank, p.name, p.wins, p.losses, p.points])).toEqual([
+      [1, 'Bekele Biruk', 3, 0, 6],
+      [2, 'Xie Tianyu', 2, 1, 5],
+      [3, 'Lee Alexus', 1, 2, 4],
+      [4, 'Oyewo BJ', 0, 3, 2],
+    ]);
+    expect(g2.players.map((p) => [p.rank, p.name, p.wins, p.losses, p.points])).toEqual([
+      [1, 'Tran Jeremy', 2, 0, 4],
+      [2, 'Lu Yi Fan', 2, 0, 4],
+      [3, 'Sepulveda Dino', 1, 2, 4],
+      [4, 'Lee Victoria', 0, 3, 3],
+    ]);
+  });
+
+  it('reads the knockout with its play-off 3/4, and the division round-robin', () => {
+    const [A, B] = ev.brackets;
+    expect([A.id, A.format, A.size, A.players, A.champion]).toEqual(['A', 'knockout', 4, 4, 'Bekele Biruk']);
+    expect(A.rounds.map((r) => r.short)).toEqual(['SF', 'Final']);
+    expect(A.thirdPlace).toEqual({
+      a: { name: 'Lu Yi Fan', bye: false, score: 3 },
+      b: { name: 'Xie Tianyu', bye: false, score: 1 },
+      winner: 'Lu Yi Fan',
+    });
+    expect([B.id, B.format, B.players, B.champion]).toEqual(['B', 'roundrobin', 4, null]);
+    expect(B.table!.players.map((p) => [p.rank, p.name, p.points])).toEqual([
+      [1, 'Lee Alexus', 2],
+      [2, 'Lee Victoria', 1],
+      [3, 'Sepulveda Dino', 0],
+      [4, 'Oyewo BJ', 0],
+    ]);
+    expect(B.table!.matches[0]).toMatchObject({ a: 'Lee Alexus', b: 'Lee Victoria', aSets: 3, bSets: 0, winner: 'Lee Alexus' });
+  });
+
+  it('leaves out the play-off when a bracket has fewer than 4 players (it is only byes then)', () => {
+    const g = v5Tab();
+    const row = g.findIndex((r) => typeof r[27] === 'string' && (r[27] as string).startsWith('GROUP A'));
+    putAt(g, row, 27, 'GROUP A - Championship Bracket (3 Players / 4-Player Bracket)');
+    const A = build({ title: 'v5', sheets: { Canada_Rankings: rankings, Club_Open: g } }).events[0].brackets[0];
+    expect(A.players).toBe(3);
+    expect(A.thirdPlace).toBeUndefined();
+  });
+
+  it('reads the current sheet once it is moved to the v5 layout', () => {
+    // Same results, written the v5 way: the pot draw (AB:AV) is gone and the brackets start at AB.
+    const v5 = clone(wb1009);
+    const ab = 27;
+    const aw = 48;
+    for (const name of ['Open_Singles', 'Active-4-Life', 'Beginners']) {
+      v5.sheets[name] = v5.sheets[name].map((row) => [...row.slice(0, ab), ...row.slice(aw)]);
+    }
+    const before = build(wb1009 as unknown as Workbook).events;
+    const after = build(v5).events;
+    expect(after.map((e) => [e.id, e.drawBy, e.drawName])).toEqual([
+      ['open-singles', 'single', null],
+      ['active-4-life', 'single', null],
+      ['beginners', 'single', null],
+    ]);
+    after.forEach((e, i) => {
+      expect(e.groups).toEqual(before[i].groups);
+      expect(e.brackets).toEqual(before[i].brackets);
+    });
+  });
+
+  it('gives the same tournament through the CSV export', () => {
+    const wb: Workbook = { title: 'v5', sheets: { Canada_Rankings: rankings, Club_Open: v5Tab({ drawLabel: 'Serpentine' }) } };
+    expect(build(viaCsv(wb)).events).toEqual(build(wb).events);
   });
 });

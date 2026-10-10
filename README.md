@@ -16,8 +16,9 @@ Browser ◀── static app (dist/client) ◀── /api/tournament ◀──�
 
 - `src/shared/parse.ts` turns the sheet tabs into JSON. It reads:
   - the ranking list tab (Serial, Name, Prov, Gender, Rating, Period, Last Played, Temp);
-  - every event tab: the roster (A:E), both group draws (the `Group` columns), and the `GROUP X - …` bracket blocks.
-- **Which group draw is used.** Every event tab has two draws: the serpentine draw first, then the seeded pot draw. The app uses the one with results entered and ignores the other. If neither has results yet (or both do), it uses the draw that the bracket `(Group N)` labels match, and the serpentine draw as a last resort. `/api/health` shows the choice for each event.
+  - every event tab: the player list (A:F), the group draw (the `Group` columns), and the `GROUP X - …` bracket blocks.
+- **The sheet is built by Tournament Tools** (the sheet's Apps Script): Clear Generated Outputs → Serpentine or Seeded Pot draw (written to G:Y, so one draw per tab) → Knockout / Tiered Brackets (written from AB). The app finds the draw and the brackets by their headers and titles, wherever they sit.
+- **Which group draw is used.** With one draw per tab, that draw. Its name ("Serpentine draw" / "Seeded pot draw") is shown only when the sheet says which it is: Tournament Tools keeps the draw type in a cell note, which the export doesn't include, so add the R1 line below. Older tabs with two draws side by side (serpentine first, seeded pot second) use the one with results entered; if neither or both have results, the draw the bracket `(Group N)` labels match, and the serpentine draw as a last resort. `/api/health` shows the choice for each event.
 - **Bracket slots** are found from the bracket layout, so pending rounds still show "Winner of …" placeholders.
 - **Before the sheet is connected**, the app serves `src/data/snapshot.grids.json` (built from an uploaded workbook).
 
@@ -33,12 +34,20 @@ The sheet must be shared as **Anyone with the link → Viewer**. Then add these 
 
 ### Sheet rules the app follows
 
-- Tab 1 is the ranking list. Every other tab is an event; tabs with no registered players are not published. A tab with players but no draw yet is shown as "Draw pending".
+- Tab 1 is the ranking list. Every other tab is an event; tabs with no registered players are not published. A tab with players but no draw yet (for example right after Clear Generated Outputs) is shown as "Draw pending".
+- Player list columns are found the way Tournament Tools finds them in A:F: a header containing "name", "prov"/"assoc"/"club", "gender"/"sex", "rating" and "bye"/"skip", falling back to A–E.
 - Group tables: `Group`, `Event Seed`, `Group Seed`, `Name`, `Province`, `Gender`, `Rating`, `W`, `L`, `Pts`, `Rank`, then `Match` ("Seed 1 vs Seed 3"), `Sets` ("3-1") and `G1`–`G5` ("11-7", first player's points first). The header row can repeat above every group. Older names (`Wins`, `Losses`, `Match Order`, `Sets (P1-P2)`) still work.
-- The sheet's W / L / Pts / Rank are official. If the standings formula shows "Loading…" or an error, the app works them out from the results using the ITTF rules (2 points a win, 1 a loss, then head-to-head), and `/api/health` says so. It also warns when the sheet's W–L don't match the results entered.
-- Tip: format the Sets and G1–G5 columns as **Plain text** so Sheets doesn't turn "3-1" into a date (dates are read back as month-day, so they still work).
-- Brackets are `GROUP X - Name (...)` blocks, and any of them (A, B, C, D…) can be a knockout or a round-robin. A block is a round-robin when its title says `(Round-Robin)` or when it has a Seed / W / L table instead of round headers; it is then shown as standings plus results.
-- Doubles: write a team as `Name / Name` in the Name column, or add a `Partner` column next to it. The team's rating is the Rating on the sheet.
+- Results are read the way the sheet's `ITTF_STANDINGS` reads them: the first score in the Sets cell ("3-1", "3:1"); Sets left blank are counted from the game scores; "3-0 WO" is a walkover (the loser gets 0 points, shown as W/O). Every match is best of 5, so a match is shown as **Live** until someone has 3 games.
+- The sheet's W / L / Pts / Rank are official. Note that `ITTF_STANDINGS` already counts a live match for the player ahead. If the formula shows "Loading…" or an error, the app works the standings out the same way the formula does, and `/api/health` says so. It also warns when the sheet's W–L don't match the results entered.
+- Tip: keep the Sets and G1–G5 columns as **Plain text** (Tournament Tools does this) so Sheets doesn't turn "3-1" into a date. Dates are read back as month-day, so they still work.
+- Brackets are `GROUP X - Name (...)` blocks, and any of them (A, B, C, D…) can be a knockout or a round-robin. A block is a round-robin when its title says `(Round-Robin)` or when it has a Seed / W / L table instead of round headers; it is then shown as standings plus results. A round-robin division should be one group (Tournament Tools can split big ones into several; the app reads the first).
+- The "Play-off 3/4" under a knockout bracket (the semifinal losers) is shown as the 3rd-place match.
+- Doubles: write a team as `Name / Name` in the Name column (Tournament Tools reads one name column). The team's rating is the Rating on the sheet.
+
+### Optional Tournament Tools tweaks
+
+- **Show the draw name in the app.** In `writeGroupStage`, after the `setNote(...)` line, add `sheet.getRange(1, startCol + 11).setValue(drawLabel);`. It writes "Serpentine" or "Seeded Pot" into R1 (the narrow gap column), which the app reads.
+- **Point the QR code at the app.** In `showPublicShareQRCode`, set `const htmlViewUrl = "https://tournament-app.raulbernales.workers.dev/";`.
 
 `/api/health` shows which source is active and the last sync error, if any.
 
