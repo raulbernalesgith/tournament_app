@@ -17,7 +17,7 @@ Browser ◀── static app (dist/client) ◀── /api/tournament ◀──�
 - `src/shared/parse.ts` turns the sheet tabs into JSON. It reads:
   - the ranking list tab (Serial, Name, Prov, Gender, Rating, Period, Last Played, Temp);
   - every event tab: the player list (A:F), the group draw (the `Group` columns), and the `GROUP X - …` bracket blocks.
-- **The sheet is built by Tournament Tools** (the sheet's Apps Script): Clear Generated Outputs → Serpentine or Seeded Pot draw (written to G:Y, so one draw per tab) → Knockout / Tiered Brackets (written from AB). The app finds the draw and the brackets by their headers and titles, wherever they sit.
+- **The sheet is built by Tournament Tools** (the sheet's Apps Script): Clear Generated Outputs → Serpentine or Seeded Pot draw (written to G:Y, so one draw per tab) → Knockout / Tiered Brackets (written from AB). Doubles skip the draw: Run Doubles Brackets writes Brackets A, B (and C) from AB. The app finds the draw and the brackets by their headers and titles, wherever they sit.
 - **Which group draw is used.** With one draw per tab, that draw. Its name ("Serpentine draw" / "Seeded pot draw") is shown only when the sheet says which it is: Tournament Tools keeps the draw type in a cell note, which the export doesn't include, so add the R1 line below. Older tabs with two draws side by side (serpentine first, seeded pot second) use the one with results entered; if neither or both have results, the draw the bracket `(Group N)` labels match, and the serpentine draw as a last resort. `/api/health` shows the choice for each event.
 - **Bracket slots** are found from the bracket layout, so pending rounds still show "Winner of …" placeholders.
 - **Before the sheet is connected**, the app serves `src/data/snapshot.grids.json` (built from an uploaded workbook).
@@ -42,7 +42,11 @@ The sheet must be shared as **Anyone with the link → Viewer**. Then add these 
 - Tip: keep the Sets and G1–G5 columns as **Plain text** (Tournament Tools does this) so Sheets doesn't turn "3-1" into a date. Dates are read back as month-day, so they still work.
 - Brackets are `GROUP X - Name (...)` blocks, and any of them (A, B, C, D…) can be a knockout or a round-robin. A block is a round-robin when its title says `(Round-Robin)` or when it has a Seed / W / L table instead of round headers; it is then shown as standings plus results. A round-robin division should be one group (Tournament Tools can split big ones into several; the app reads the first).
 - The "Play-off 3/4" under a knockout bracket (the semifinal losers) is shown as the 3rd-place match.
-- Doubles: write a team as `Name / Name` in the Name column (Tournament Tools reads one name column). The team's rating is the Rating on the sheet.
+- **Doubles** (Tournament Tools → Run Doubles Brackets). The tab lists Player 1, Player 2, Name (the team, "Player 1 / Player 2"), Province and Rating (the pair's total). There's no group stage, so Group_Stage_Bye is ignored. Every team starts in Bracket A, shown as **Championship**:
+  - with two brackets, a team that loses its first match in A drops to Bracket B, **Consolation** (a team with a first-round bye drops only if it loses its next match);
+  - with three, round-1 losers drop to Bracket C, **Division C**, and round-2 losers to B.
+
+  B and C fill in as A is played; until then their slots say "Drops from Bracket A". A team's profile shows both partners from the ranking list and every bracket the team played in. In the desktop bracket, teams show as surnames ("Lehmann / ZHANG"); hover for the full names.
 
 ### Optional Tournament Tools tweaks
 

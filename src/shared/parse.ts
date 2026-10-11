@@ -15,6 +15,9 @@ import type {
   Tournament,
   Workbook,
 } from './types';
+import { teamMembers } from './names';
+
+export { teamMembers };
 
 /* ------------------------------------------------------------------ */
 /* Cell helpers                                                        */
@@ -426,9 +429,22 @@ interface Layout {
   roster: { name: number; prov: number; gender: number; rating: number; bye: number };
   draws: number[];
   bracketCol: number;
+  /** The player list has Player 1 / Player 2 columns: a doubles tab. */
+  pairs: boolean;
 }
 
+/** Singles brackets: "GROUP A - Championship Bracket (27 Players / 32-Player Bracket)". */
 const TITLE_RE = /^GROUP\s+([A-Z0-9]+)\s*[-–—:]\s*(.*)$/i;
+/** Doubles brackets (Tournament Tools "Run Doubles Brackets"): "BRACKET A (8 Teams / 8-Team Bracket)". */
+const BRACKET_RE = /^BRACKET\s+([A-Z0-9]+)\s*(\(.*)?$/i;
+const isTitle = (v: Cell) => {
+  const s = text(v);
+  return TITLE_RE.test(s) || BRACKET_RE.test(s);
+};
+/** "(27 Players / 32-Player Bracket)", "(8 Teams / 8-Team Bracket)", "(up to 6 Teams / 8-Team Bracket)". */
+const SIZE_RE = /\(\s*(?:up\s+to\s+)?(\d+)\s*(players?|teams?)\s*\/\s*(\d+)\s*-?\s*(?:player|team)s?\s*bracket\s*\)/i;
+/** What the doubles brackets are called in the app (the sheet titles them Bracket A / B / C). */
+const DOUBLES_LABEL: Record<string, string> = { A: 'Championship', B: 'Consolation', C: 'Division C' };
 
 export type DrawName = EventData['drawName'];
 
@@ -476,25 +492,29 @@ export function eventLayout(g: Grid): Layout | null {
   const bye = find(ROSTER.bye, -1);
   // Before the draw, only a real bye column (Group_Stage_Bye) marks an event tab; "Skip…" alone is too common.
   if (nameCol < 0 || (draws.length === 0 && find(/bye/, -1) < 0)) return null;
+  // Brackets sit to the right of the draw, or anywhere past the player list on tabs with no group stage (doubles).
   let bracketCol = -1;
-  if (draws.length) {
-    for (let r = 0; r < g.length; r += 1) {
-      const row = g[r] ?? [];
-      for (let c = draws[draws.length - 1] + 1; c < row.length; c += 1) {
-        if (TITLE_RE.test(text(row[c] ?? null)) && (bracketCol < 0 || c < bracketCol)) bracketCol = c;
-      }
+  const from = draws.length ? draws[draws.length - 1] + 1 : 6;
+  for (let r = 0; r < g.length; r += 1) {
+    const row = g[r] ?? [];
+    for (let c = from; c < row.length; c += 1) {
+      if (isTitle(row[c] ?? null) && (bracketCol < 0 || c < bracketCol)) bracketCol = c;
     }
   }
+  // A missing header falls back to Tournament Tools' default column, except onto the name column: the doubles tab
+  // has no Gender column, and its column C (Gender's default) is the team name.
+  const orDefault = (c: number, fallback: number) => (c >= 0 ? c : fallback === nameCol ? -1 : fallback);
   return {
     roster: {
       name: nameCol,
-      prov: find(ROSTER.prov, 1),
-      gender: find(ROSTER.gender, 2),
-      rating: find(ROSTER.rating, 3),
-      bye: bye >= 0 ? bye : 4,
+      prov: orDefault(find(ROSTER.prov, -1), 1),
+      gender: orDefault(find(ROSTER.gender, -1), 2),
+      rating: orDefault(find(ROSTER.rating, -1), 3),
+      bye: orDefault(bye, 4),
     },
     draws,
     bracketCol,
+    pairs: find(/player\s*1/, -1) >= 0 && find(/player\s*2/, -1) >= 0,
   };
 }
 
@@ -502,7 +522,8 @@ function parseRoster(g: Grid, L: Layout['roster']): RosterEntry[] {
   const out: RosterEntry[] = [];
   for (let r = 1; r < g.length; r += 1) {
     const name = text(at(g, r, L.name));
-    if (!name) continue;
+    // A team name formula with both players blank can leave just " / ".
+    if (!name || /^[\s/]*$/.test(name)) continue;
     out.push({
       name,
       province: L.prov >= 0 ? text(at(g, r, L.prov)) : '',
@@ -612,8 +633,8 @@ function parseDraw(g: Grid, s: number, end: number, event: string): DrawResult {
   return { groups: list.sort((a, b) => key(a) - key(b) || a.label.localeCompare(b.label)), results, notes, label };
 }
 
-/** "Name (1710) (Group 2)", the way bracket and round-robin entries are written. */
-const ENTRY_RE = /^(.*?)\s*\(([\d.]+)\)\s*\((.*)\)\s*$/;
+/** "Name (1710) (Group 2)" for singles, "Name / Name (3871)" for doubles teams. */
+const ENTRY_RE = /^(.*?)\s*\(([\d.]+)\)(?:\s*\((.*)\))?\s*$/;
 
 interface Entry {
   name: string | null;
@@ -628,7 +649,7 @@ function readEntry(g: Grid, row: number, col: number): Entry {
   if (!raw) return { name: null, bye: false, origin: null, score };
   if (/^bye$/i.test(raw)) return { name: null, bye: true, origin: null, score: null };
   const m = ENTRY_RE.exec(raw);
-  if (m) return { name: m[1].trim(), bye: false, origin: m[3].trim(), score };
+  if (m) return { name: m[1].trim(), bye: false, origin: m[3]?.trim() || null, score };
   return { name: raw, bye: false, origin: null, score };
 }
 
@@ -659,21 +680,29 @@ function roundName(raw: string): { name: string; short: string } {
 interface ParsedBracket {
   bracket: Bracket;
   firstRound: Entry[];
+  /** The title counts teams ("8 Teams / 8-Team Bracket"). */
+  teams?: boolean;
 }
 
 function parseBrackets(g: Grid, bc: number, warn: (m: string) => void, tab: string, event: string): ParsedBracket[] {
   if (bc < 0) return [];
   const titles: number[] = [];
-  for (let r = 0; r < g.length; r += 1) if (TITLE_RE.test(text(at(g, r, bc)))) titles.push(r);
+  for (let r = 0; r < g.length; r += 1) if (isTitle(at(g, r, bc))) titles.push(r);
   const out: ParsedBracket[] = [];
   for (const tr of titles) {
     const title = text(at(g, tr, bc));
-    const m = TITLE_RE.exec(title)!;
-    const id = m[1].toUpperCase();
-    const rest = m[2];
+    const singles = TITLE_RE.exec(title);
+    const doubles = singles ? null : BRACKET_RE.exec(title)!;
+    const id = (singles ?? doubles)![1].toUpperCase();
+    const rest = singles ? singles[2] : doubles![2] ?? '';
     const preliminary = /preliminary\s+projection/i.test(rest);
-    const sizeMatch = /\((\d+)\s*players?\s*\/\s*(\d+)\s*-?\s*player\s*bracket\)/i.exec(rest);
-    const label = rest.replace(/\(.*$/, '').replace(/\s+bracket\s*$/i, '').trim() || `Bracket ${id}`;
+    const sizeMatch = SIZE_RE.exec(rest);
+    const teams = !!sizeMatch && /^team/i.test(sizeMatch[2]);
+    // Doubles Brackets B and C take Bracket A's losers as they drop: "up to 6 Teams".
+    const upTo = /\(\s*up\s+to\s+\d+/i.test(rest);
+    const label = singles
+      ? rest.replace(/\(.*$/, '').replace(/\s+bracket\s*$/i, '').trim() || `Bracket ${id}`
+      : DOUBLES_LABEL[id] ?? `Bracket ${id}`;
     // Any bracket (A, B, C, D…) can be a knockout or a round-robin. Decide from the
     // title first, then from the layout: knockout blocks have round headers right
     // under the title, round-robin blocks have a Seed/W/L table.
@@ -700,8 +729,8 @@ function parseBrackets(g: Grid, bc: number, warn: (m: string) => void, tab: stri
       continue;
     }
     const size = 2 ** R;
-    if (sizeMatch && Number(sizeMatch[2]) !== size) {
-      warn(`${tab}: bracket ${id} title says ${sizeMatch[2]}-player bracket but has ${R} rounds`);
+    if (sizeMatch && Number(sizeMatch[3]) !== size) {
+      warn(`${tab}: bracket ${id} title says ${sizeMatch[3]}-${teams ? 'team' : 'player'} bracket but has ${R} rounds`);
     }
     const fr = hr + 1;
     const entry = (k: number, j: number) => readEntry(g, fr + (2 ** k - 1) + j * 2 ** (k + 1), bc + 3 * k);
@@ -725,12 +754,21 @@ function parseBrackets(g: Grid, bc: number, warn: (m: string) => void, tab: stri
       rounds.push({ ...roundName(roundHeaders[k]), matches });
     }
     const champion = hasChampion ? entry(R, 0).name : null;
-    const players = sizeMatch ? Number(sizeMatch[1]) : firstRound.filter((e) => e.name).length;
+    // A feeder bracket's count shrinks as Bracket A is played: a slot either gets a team or turns into a BYE.
+    const players = upTo
+      ? firstRound.filter((e) => !e.bye).length
+      : sizeMatch
+        ? Number(sizeMatch[1])
+        : firstRound.filter((e) => e.name).length;
     const bracket: Bracket = { id, label, format: 'knockout', size, players, preliminary, champion, rounds };
+    if (upTo) {
+      bracket.fromBracket = 'A';
+      bracket.upTo = Number(sizeMatch?.[1] ?? players);
+    }
     // With fewer than 4 players the play-off is only byes, so it is left out.
     const thirdPlace = players >= 4 ? readPlayoff(g, fr + 2 * size - 1, bc) : null;
     if (thirdPlace) bracket.thirdPlace = thirdPlace;
-    out.push({ bracket, firstRound });
+    out.push({ bracket, firstRound, teams });
   }
   return out;
 }
@@ -745,7 +783,7 @@ const PLAYOFF_RE = /play-?\s*off\s*3\s*\/\s*4|3rd\s*place|third\s*place/i;
 function readPlayoff(g: Grid, from: number, bc: number): Match | null {
   for (let r = from; r < Math.min(g.length, from + 8); r += 1) {
     const cell = text(at(g, r, bc));
-    if (TITLE_RE.test(cell)) return null;
+    if (isTitle(cell)) return null;
     if (!PLAYOFF_RE.test(cell)) continue;
     const a = readEntry(g, r + 2, bc);
     const b = readEntry(g, r + 4, bc);
@@ -895,24 +933,26 @@ function parseEvent(tab: string, g: Grid, warn: (m: string) => void): EventData 
   const parsed = parseBrackets(g, L.bracketCol, warn, tab, name);
   const { draw, by, name: drawName } = chooseDraw(draws, parsed.map((p) => p.firstRound), warn, name);
   draws[draw - 1]?.notes.forEach(warn);
+  // A doubles tab: Player 1 / Player 2 columns, brackets titled in teams, every name a team, or a "Doubles" tab with
+  // teams in it (one team can still be half entered).
+  const teamCount = roster.filter((p) => teamMembers(p.name).length > 1).length;
+  const teams = teamCount > 0 && (L.pairs || parsed.some((p) => p.teams) || teamCount === roster.length || /doubles/i.test(tab));
+  // Doubles from Run Doubles Brackets go straight to the knockout: no group stage, so no group-stage byes either.
+  const knockoutOnly = L.draws.length === 0 && (parsed.length > 0 || teams);
   return {
     id: slug(tab),
     name,
     tab,
     roster,
-    byes: roster.filter((p) => p.bye).map((p) => p.name),
+    knockoutOnly,
+    teams,
+    byes: knockoutOnly ? [] : roster.filter((p) => p.bye).map((p) => p.name),
     draw,
     drawName,
     drawBy: by,
     groups: draws[draw - 1]?.groups ?? [],
     brackets: parsed.map((p) => p.bracket),
   };
-}
-
-/** The players in a doubles team written as "A / B"; one name for singles. */
-export function teamMembers(name: string): string[] {
-  const parts = name.split('/').map((s) => s.trim()).filter(Boolean);
-  return parts.length > 1 ? parts : [name];
 }
 
 /* ------------------------------------------------------------------ */

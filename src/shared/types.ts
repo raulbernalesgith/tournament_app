@@ -42,6 +42,10 @@ export interface EventData {
   name: string;
   tab: string;
   roster: RosterEntry[];
+  /** No group stage: everyone starts in the knockout (doubles). */
+  knockoutOnly: boolean;
+  /** Entries are doubles teams ("Name / Name"). */
+  teams: boolean;
   /** Players who skip the group stage (Group_Stage_Bye = TRUE). */
   byes: string[];
   /** Which group draw block on the tab is in use (1 = the first "Group" column). */
@@ -132,6 +136,10 @@ export interface Bracket {
   rounds: Round[];
   /** Play-off 3/4 between the semifinal losers (knockout brackets from Tournament Tools). */
   thirdPlace?: Match;
+  /** Doubles: this bracket's entries are teams dropping from another bracket (e.g. "A"). */
+  fromBracket?: string;
+  /** Doubles: how many teams can drop into this bracket (the title's "up to 6 Teams"). */
+  upTo?: number;
 }
 
 export interface Round {

@@ -10,6 +10,10 @@ import {
   formatDate,
   bracketDone,
   drawLabel,
+  drawSize,
+  dropNote,
+  dropRules,
+  entrants,
   groupLive,
   groupPlayed,
   groupTotal,
@@ -19,14 +23,19 @@ import {
   isPlayed,
   bracketPlayed,
   bracketTotal,
+  knockoutRecord,
   nextUp,
+  noun,
   ord,
   origin,
-  pathOf,
+  pathsOf,
   playoffRound,
   rating,
+  shortName,
   sortedPeople,
+  teamMembers,
   type EventModel,
+  type PlayerPath,
 } from './model';
 
 type View = 'overview' | 'groups' | 'knockout' | 'players';
@@ -259,7 +268,7 @@ function Main({ t, ev, ui, setUi, desk, theme, setTheme, now, toast, menuOpen, s
         {shownView === 'groups' && <GroupsView t={t} ev={ev} M={M} ui={ui} setUi={setUi} sel={desk ? sel : ''} openProfile={openProfile} desk={desk} />}
         {shownView === 'knockout' && bracket && (desk ? (
           <div class="panel glass streak">
-            <BracketHead b={bracket} sel={sel} />
+            <BracketHead b={bracket} sel={sel} teams={ev.teams} />
             {bracket.format === 'roundrobin' ? (
               <RoundRobin t={t} M={M} b={bracket} sel={sel} onPick={openProfile} desk />
             ) : (
@@ -294,7 +303,11 @@ function Main({ t, ev, ui, setUi, desk, theme, setTheme, now, toast, menuOpen, s
                 <button key={e.id} class="row-btn" role="menuitemradio" aria-checked={on} onClick={() => switchEvent(e.id)} style={{ background: on ? 'var(--chip)' : undefined }}>
                   <span style={{ flex: 1, minWidth: 0 }}>
                     <span style={{ display: 'block', fontSize: 17, fontWeight: 650 }}>{e.name}</span>
-                    <span class="faint" style={{ display: 'block', fontSize: 13 }}>{m.people.length} players · {e.groups.length} groups</span>
+                    <span class="faint" style={{ display: 'block', fontSize: 13 }}>
+                      {e.knockoutOnly
+                        ? `${m.people.length} ${noun(e.teams, m.people.length)} · ${e.brackets.length} ${e.brackets.length === 1 ? 'bracket' : 'brackets'}`
+                        : `${m.people.length} ${noun(e.teams, m.people.length)} · ${e.groups.length} groups`}
+                    </span>
                   </span>
                   <span class="pill" style={{ color: m.stage === 'done' || m.stage === 'live' ? 'var(--accent-text)' : 'var(--blue-text)' }}>{STAGE_LABEL[m.stage]}</span>
                   <span style={{ width: 22, opacity: on ? 1 : 0, color: 'var(--accent-text)' }}><Icon name="check" size={20} stroke={2.4} /></span>
@@ -302,7 +315,7 @@ function Main({ t, ev, ui, setUi, desk, theme, setTheme, now, toast, menuOpen, s
               );
             })}
           </div>
-          <TabBar view={shownView} setUi={setUi} />
+          <TabBar view={shownView} setUi={setUi} teams={ev.teams} />
         </>
       )}
 
@@ -332,6 +345,23 @@ function Backdrop() {
   );
 }
 
+/** A player's name, or a doubles team with each partner on a line of their own (or as surnames, `short`). */
+function Name({ name, short = false }: { name: string; short?: boolean }) {
+  const members = teamMembers(name);
+  if (members.length < 2) return <>{name}</>;
+  if (short) return <>{shortName(name)}</>;
+  return (
+    <span class="team">
+      {members.map((m, i) => (
+        <span class="team-line" key={i}>{m}</span>
+      ))}
+    </span>
+  );
+}
+
+/** "Group 3 · 1st · rating 1820" style details, leaving out the parts a player doesn't have. */
+const joinDots = (parts: (string | null | undefined | false)[]) => parts.filter(Boolean).join(' · ');
+
 function Seg<T extends string>({ items, value, onPick, width, height = 52, label, class: cls = '' }: {
   items: { id: T; node: preact.ComponentChildren }[];
   value: T;
@@ -359,10 +389,10 @@ function Hero({ t, ev, M, desk, setUi, openProfile }: { t: Tournament; ev: Event
   let icon: 'trophy' | 'clock' = 'clock';
   let over = '';
   let sub = '';
-  let title = 'Brackets coming soon';
-  let line = 'They fill in as group results arrive';
+  let title: preact.ComponentChildren = 'Brackets coming soon';
+  let line = ev.knockoutOnly ? 'No group stage: they appear as soon as the brackets are drawn' : 'They fill in as group results arrive';
   let chips: { round: string; score: string }[] = [];
-  let cta = 'See the groups';
+  let cta = ev.knockoutOnly ? 'How it works' : 'See the groups';
   let go = () => setUi({ v: 'groups' });
   if (A?.format === 'roundrobin' && A.table) {
     const lead = A.table.players[0];
@@ -381,19 +411,29 @@ function Hero({ t, ev, M, desk, setUi, openProfile }: { t: Tournament; ev: Event
     icon = 'trophy';
     over = `${A.id} · ${A.label}`;
     sub = 'Champion';
-    title = A.champion;
-    line = ru.name ? `Beat ${ru.name} ${me.score}–${ru.score} in the final` : 'Won the title without a final to play';
-    chips = (pathOf(ev, A.champion)?.steps ?? []).filter((s) => s.res !== 'bye').map((s) => ({ round: s.round.short, score: `${s.my}–${s.os}` }));
+    title = <Name name={A.champion} />;
+    line = ru.name ? `Beat ${shortName(ru.name)} ${me.score}–${ru.score} in the final` : 'Won the title without a final to play';
+    const run = pathsOf(ev, A.champion).find((p) => p.bracket.id === A.id);
+    chips = (run?.steps ?? []).filter((s) => s.res !== 'bye').map((s) => ({ round: s.round.short, score: `${s.my}–${s.os}` }));
     cta = desk ? 'Open profile' : 'View the bracket';
     go = desk ? () => openProfile(A.champion!) : () => setUi({ v: 'knockout', b: A.id, r: A.rounds.length - 1 });
   } else if (A) {
     const nx = nextUp(A);
     over = `${A.id} · ${A.label}`;
     if (nx) {
+      const [a, b] = [nx.match.a.name!, nx.match.b.name!];
       sub = A.preliminary ? 'Projected · up next' : 'Up next';
       over += ` · ${nx.round.name}`;
-      title = `${nx.match.a.name} vs ${nx.match.b.name}`;
-      line = `${origin(M, nx.match.a.name!)} (${rating(t, nx.match.a.name!)}) vs ${origin(M, nx.match.b.name!)} (${rating(t, nx.match.b.name!)})`;
+      title = ev.teams ? (
+        <span class="team">
+          <span class="team-line">{shortName(a)}</span>
+          <span class="team-line"><span class="faint">vs </span>{shortName(b)}</span>
+        </span>
+      ) : (
+        `${a} vs ${b}`
+      );
+      const who = (n: string) => (origin(M, n) ? `${origin(M, n)} (${rating(t, n)})` : `Rating ${rating(t, n)}`);
+      line = ev.teams ? `Team ratings ${rating(t, a)} vs ${rating(t, b)}` : `${who(a)} vs ${who(b)}`;
       chips = [{ round: nx.round.short, score: `${nx.ready} ready` }];
       cta = desk ? 'Trace in bracket' : 'Open the bracket';
       go = () => setUi({ v: 'knockout', b: A.id, r: nx.ri, p: nx.match.a.name!, o: false });
@@ -432,6 +472,17 @@ function Hero({ t, ev, M, desk, setUi, openProfile }: { t: Tournament; ev: Event
 }
 
 function statsOf(M: EventModel, ev: EventData) {
+  if (ev.knockoutOnly) {
+    const n = M.people.length;
+    const alive = M.people.filter((p) => finishOf(ev, p).kind === 'alive').length;
+    const drawn = ev.brackets.length > 0;
+    return [
+      { label: ev.teams ? 'Teams' : 'Players', value: String(n), sub: 'No group stage', short: noun(ev.teams, n) },
+      { label: 'Brackets', value: String(ev.brackets.length), sub: drawn ? ev.brackets.map((b) => b.id).join(' + ') : 'Not drawn yet', short: ev.brackets.length === 1 ? 'bracket' : 'brackets' },
+      { label: 'Knockout', value: `${M.kPlayed}/${M.kTotal}`, sub: !drawn ? 'Draw pending' : M.kPlayed >= M.kTotal ? 'All played' : `${M.kTotal - M.kPlayed} to play`, short: 'knockout matches' },
+      { label: 'Still in', value: drawn ? String(alive) : '–', sub: `of ${n} ${noun(ev.teams, n)}`, short: `${noun(ev.teams, alive)} still in` },
+    ];
+  }
   const sizes = [...new Set(ev.groups.map((g) => g.players.length))].sort((a, b) => a - b);
   const size = sizes.join('–') || '0';
   return [
@@ -485,8 +536,8 @@ function DeskHeader({ t, ev, M, ui, setUi, theme, toggleTheme, switchEvent, sync
         </span>
         <label class="search" style={{ width: 260 }}>
           <Icon name="search" size={18} stroke={2} class="faint" />
-          <span class="sr-only">Search players</span>
-          <input type="search" placeholder="Search players" value={ui.q} onInput={(e) => setUi({ q: (e.target as HTMLInputElement).value, v: 'players' })} />
+          <span class="sr-only">{ev.teams ? 'Search teams' : 'Search players'}</span>
+          <input type="search" placeholder={ev.teams ? 'Search teams' : 'Search players'} value={ui.q} onInput={(e) => setUi({ q: (e.target as HTMLInputElement).value, v: 'players' })} />
         </label>
         <button class="btn btn-round" style={{ width: 48, height: 48, borderRadius: 24, background: 'var(--chip)', border: '1px solid var(--chip-border)' }} aria-label={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'} onClick={toggleTheme}>
           <Icon name={theme === 'dark' ? 'sun' : 'moon'} />
@@ -498,11 +549,17 @@ function DeskHeader({ t, ev, M, ui, setUi, theme, toggleTheme, switchEvent, sync
           <div class="overline" style={{ color: stageColor(M.stage) }}>{STAGE_LABEL[M.stage]}</div>
           <h1>{ev.name}</h1>
           <div class="muted" style={{ marginTop: 12, fontSize: 17 }}>
-            {ev.byes.length} top {ev.byes.length === 1 ? 'seed skips' : 'seeds skip'} the groups · {ev.brackets.length} knockout {ev.brackets.length === 1 ? 'bracket' : 'brackets'}
-            {ev.groups.length > 0 && drawLabel(ev) ? ` · ${drawLabel(ev)}` : ''}
+            {ev.knockoutOnly ? (
+              <>No group stage · every {ev.teams ? 'team' : 'player'} starts in bracket A{ev.brackets.some((b) => b.fromBracket) ? ` · early losers drop to ${ev.brackets.filter((b) => b.fromBracket).map((b) => b.id).join(' or ')}` : ''}</>
+            ) : (
+              <>
+                {ev.byes.length} top {ev.byes.length === 1 ? 'seed skips' : 'seeds skip'} the groups · {ev.brackets.length} knockout {ev.brackets.length === 1 ? 'bracket' : 'brackets'}
+                {ev.groups.length > 0 && drawLabel(ev) ? ` · ${drawLabel(ev)}` : ''}
+              </>
+            )}
           </div>
           <div class="stat-chips">
-            {statsOf(M, ev).map((s) => (
+            {statsOf(M, ev).filter((s) => s.value !== '–').map((s) => (
               <div class="stat-chip glass soft" key={s.label}>
                 <span class="mono">{s.value}</span>
                 <span class="muted" style={{ fontSize: 13 }}>{s.short}</span>
@@ -521,7 +578,7 @@ function DeskTabs({ view, setUi, ev, bracket }: { view: View; setUi: (p: Partial
     <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 16, marginTop: 34 }}>
       <Seg
         label="Views"
-        items={([['knockout', 'Knockout', 'bracket'], ['groups', 'Groups', 'groups'], ['players', 'Players', 'players']] as const).map(([id, l, ic]) => ({
+        items={([['knockout', 'Knockout', 'bracket'], ['groups', 'Groups', 'groups'], ['players', ev.teams ? 'Teams' : 'Players', 'players']] as const).map(([id, l, ic]) => ({
           id,
           node: <><Icon name={ic} size={18} />{l}</>,
         }))}
@@ -561,7 +618,7 @@ function PhoneHeader({ t, ev, M, theme, toggleTheme, menuOpen, setMenuOpen, goPl
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
           <button class="btn btn-round glass" aria-label={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'} onClick={toggleTheme}><Icon name={theme === 'dark' ? 'sun' : 'moon'} /></button>
-          <button class="btn btn-round glass" aria-label="Search players" onClick={goPlayers}><Icon name="search" /></button>
+          <button class="btn btn-round glass" aria-label={ev.teams ? 'Search teams' : 'Search players'} onClick={goPlayers}><Icon name="search" /></button>
         </div>
       </div>
       <div class="phone-title">
@@ -570,18 +627,22 @@ function PhoneHeader({ t, ev, M, theme, toggleTheme, menuOpen, setMenuOpen, goPl
           <span>{ev.name}</span>
           <span class={`title-chev ${menuOpen ? 'open' : ''}`}><Icon name="chevDown" size={16} stroke={2.2} /></span>
         </button>
-        <div class="muted">{M.people.length} players · {ev.groups.length} groups · {ev.brackets.length} brackets</div>
+        <div class="muted">
+          {ev.knockoutOnly
+            ? `${M.people.length} ${noun(ev.teams, M.people.length)} · no group stage · ${ev.brackets.length} ${ev.brackets.length === 1 ? 'bracket' : 'brackets'}`
+            : `${M.people.length} ${noun(ev.teams, M.people.length)} · ${ev.groups.length} groups · ${ev.brackets.length} brackets`}
+        </div>
       </div>
     </>
   );
 }
 
-function TabBar({ view, setUi }: { view: View; setUi: (p: Partial<Ui>) => void }) {
+function TabBar({ view, setUi, teams }: { view: View; setUi: (p: Partial<Ui>) => void; teams: boolean }) {
   const tabs = [
     ['overview', 'Overview', 'home'],
     ['groups', 'Groups', 'groups'],
     ['knockout', 'Knockout', 'bracket'],
-    ['players', 'Players', 'players'],
+    ['players', teams ? 'Teams' : 'Players', 'players'],
   ] as const;
   const idx = Math.max(0, tabs.findIndex((x) => x[0] === view));
   return (
@@ -617,6 +678,12 @@ function Overview({ t, ev, M, setUi, openProfile, syncLabel, live }: { t: Tourna
       {ev.brackets.length > 0 && (
         <>
           <div class="section-head"><h2>Knockout brackets</h2><span class="faint" style={{ fontSize: 13 }}>{ev.brackets.length} drawn</span></div>
+          {ev.knockoutOnly && (
+            <div class="muted" style={{ fontSize: 13, padding: '0 4px', marginTop: -6 }}>
+              No group stage: every {ev.teams ? 'team' : 'player'} starts in A.{' '}
+              {dropRules(ev).filter((r) => r.bracket.fromBracket).map((r) => `${r.rule} drop to ${r.bracket.id}.`).join(' ')}
+            </div>
+          )}
           <div class="list-card glass">
             {ev.brackets.map((b) => {
               const st = bracketStatus(b);
@@ -626,12 +693,12 @@ function Overview({ t, ev, M, setUi, openProfile, syncLabel, live }: { t: Tourna
                   <span class={`badge b-${b.id}`} style={{ width: 42, height: 42, borderRadius: 14, fontSize: 18 }}>{b.id}</span>
                   <span style={{ flex: 1, minWidth: 0 }}>
                     <span style={{ display: 'block', fontSize: 16, fontWeight: 650 }}>{b.label}</span>
-                    <span class="faint" style={{ display: 'block', fontSize: 13 }}>{b.players} players · {b.format === 'roundrobin' ? 'round-robin' : `${b.size}-draw`}</span>
+                    <span class="faint" style={{ display: 'block', fontSize: 13 }}>{entrants(b, ev.teams)} · {b.format === 'roundrobin' ? 'round-robin' : `${b.size}-draw`}</span>
                   </span>
                   <span style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4, maxWidth: 132, minWidth: 0 }}>
                     <span class={`pill ${st.cls}`}>{st.label}</span>
                     <span class="ell" style={{ maxWidth: 132, fontSize: 13, fontWeight: 600, color: b.champion ? 'var(--text)' : 'var(--text-2)' }}>
-                      {b.champion ?? `${played} of ${bracketTotal(b)} played`}
+                      {b.champion ? shortName(b.champion) : `${played} of ${bracketTotal(b)} played`}
                     </span>
                   </span>
                   <Icon name="chevRight" size={18} stroke={2} class="faint" />
@@ -672,6 +739,33 @@ function GroupsView({ t, ev, M, ui, setUi, sel, openProfile, desk }: { t: Tourna
   M.dest.forEach((id, rank) => byBracket.set(id, [...(byBracket.get(id) ?? []), rank].sort((a, b) => a - b)));
   const groups = desk || !ui.g ? ev.groups : ev.groups.filter((g) => g.label === ui.g);
   const pts = hasPoints(ev);
+  if (ev.knockoutOnly) {
+    const card = (
+      <div class={`legend ${desk ? 'inner' : 'glass'}`} style={{ padding: 18 }}>
+        <div style={{ fontSize: 17, fontWeight: 700 }}>No group stage</div>
+        <div class="muted" style={{ fontSize: 14, marginTop: 4 }}>
+          {ev.name} goes straight to the knockout.{' '}
+          {`Every ${ev.teams ? 'team' : 'player'} starts in bracket A, and ${noun(ev.teams, 2)} that lose early drop to another bracket`}
+          {ev.brackets.length ? ' and play on.' : '. The brackets appear here once they are drawn.'}
+        </div>
+        {ev.brackets.length > 0 && (
+          <div class="drop-list">
+            {dropRules(ev).map(({ bracket: b, rule }) => (
+              <button key={b.id} class="drop-row" onClick={() => setUi({ v: 'knockout', b: b.id, r: 0 })}>
+                <span class={`badge b-${b.id}`} style={{ width: 34, height: 34, borderRadius: 11, fontSize: 15 }}>{b.id}</span>
+                <span style={{ minWidth: 0 }}>
+                  <span style={{ display: 'block', fontSize: 15, fontWeight: 650 }}>{b.label}</span>
+                  <span class="faint" style={{ display: 'block', fontSize: 13 }}>{rule} · {entrants(b, ev.teams).toLowerCase()}</span>
+                </span>
+                <Icon name="chevRight" size={18} stroke={2} class="faint" />
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+    return desk ? <div class="panel glass streak">{card}</div> : <div class="view">{card}</div>;
+  }
   if (!ev.groups.length) {
     const empty = <div class={`empty ${desk ? '' : 'glass'}`} style={{ borderRadius: 28 }}>The groups haven't been drawn yet. They appear here as soon as the sheet has them.</div>;
     return desk ? <div class="panel glass streak">{empty}</div> : <div class="view">{empty}</div>;
@@ -757,7 +851,7 @@ function GroupsView({ t, ev, M, ui, setUi, sel, openProfile, desk }: { t: Tourna
 /* Knockout                                                            */
 /* ------------------------------------------------------------------ */
 
-function BracketHead({ b, sel }: { b: Bracket; sel: string }) {
+function BracketHead({ b, sel, teams }: { b: Bracket; sel: string; teams: boolean }) {
   const st = bracketStatus(b);
   const played = bracketPlayed(b);
   return (
@@ -769,12 +863,15 @@ function BracketHead({ b, sel }: { b: Bracket; sel: string }) {
             <h2 style={{ fontSize: 24, fontWeight: 700 }}>{b.label}</h2>
             <span class={`pill ${st.cls}`}>{st.label}</span>
           </div>
-          <div class="muted" style={{ fontSize: 14 }}>{b.players} players · {b.format === 'roundrobin' ? 'round-robin, everyone plays everyone' : `${b.size}-player draw`} · {played}/{bracketTotal(b)} matches played</div>
+          <div class="muted" style={{ fontSize: 14 }}>
+            {entrants(b, teams)} · {b.format === 'roundrobin' ? 'round-robin, everyone plays everyone' : drawSize(b, teams)} · {played}/{bracketTotal(b)} matches played
+            {b.fromBracket ? ` · ${noun(teams, 2)} drop in from ${b.fromBracket}` : ''}
+          </div>
         </div>
       </div>
       <div class="muted" style={{ display: b.format === 'roundrobin' ? 'none' : 'flex', alignItems: 'center', gap: 10, fontSize: 13 }}>
         <span style={{ width: 26, height: 3, borderRadius: 2, background: 'var(--accent)' }} />
-        {sel ? `Tracing ${sel} · click any name to follow their run` : 'Click any name to trace a run'}
+        {sel ? `Tracing ${shortName(sel)} · click any name to follow their run` : 'Click any name to trace a run'}
       </div>
     </div>
   );
@@ -788,7 +885,7 @@ function BracketTree({ t, M, b, sel, pick }: { t: Tournament; M: EventModel; b: 
   return (
     <>
     <div class="tree-scroll">
-      <div class="tree">
+      <div class={`tree ${M.ev.teams ? 'teams' : ''}`}>
         {b.rounds.map((r, ri) => {
           const n = r.matches.length;
           const half = H / (4 * n);
@@ -807,7 +904,7 @@ function BracketTree({ t, M, b, sel, pick }: { t: Tournament; M: EventModel; b: 
                           <span class={`conn stub ${hot ? 'hot' : ''}`} />
                         </>
                       )}
-                      <div class={`tm-card glass soft ${hot ? 'hot' : ''} ${isBye(m) ? 'byecard' : ''}`}>
+                      <div class={`tm-card glass soft ${hot ? 'hot' : ''} ${isBye(m) ? 'byecard' : ''} ${m.a.bye && m.b.bye ? 'voidcard' : ''}`}>
                         <TreeRow t={t} M={M} b={b} m={m} side="a" ri={ri} mi={mi} sel={sel} pick={pick} />
                         <TreeRow t={t} M={M} b={b} m={m} side="b" ri={ri} mi={mi} sel={sel} pick={pick} />
                       </div>
@@ -826,8 +923,8 @@ function BracketTree({ t, M, b, sel, pick }: { t: Tournament; M: EventModel; b: 
               <button class={`champ-tile glass btn ${b.champion ? 'won' : 'thin'}`} disabled={!b.champion} onClick={() => b.champion && pick(b.champion)}>
                 <span class="trophy" style={b.champion ? {} : { background: 'var(--chip)', color: 'var(--text-3)', boxShadow: 'none' }}><Icon name="trophy" size={28} stroke={1.7} /></span>
                 <span class="overline" style={{ fontSize: 11, color: b.champion ? 'var(--accent-text)' : 'var(--text-3)' }}>{b.id} · {b.label}</span>
-                <span style={{ fontSize: 18, fontWeight: 700, letterSpacing: '-0.02em', lineHeight: 1.2 }}>{b.champion ?? 'To be decided'}</span>
-                <span class="muted" style={{ fontSize: 12 }}>{b.champion ? `Rating ${rating(t, b.champion)} · ${origin(M, b.champion)}` : b.preliminary ? 'Projected draw' : 'Final not played yet'}</span>
+                <span style={{ maxWidth: '100%', fontSize: b.champion && teamMembers(b.champion).length > 1 ? 16 : 18, fontWeight: 700, letterSpacing: '-0.02em', lineHeight: 1.2 }}>{b.champion ? <Name name={b.champion} /> : 'To be decided'}</span>
+                <span class="muted" style={{ fontSize: 12 }}>{b.champion ? joinDots([`Rating ${rating(t, b.champion)}`, origin(M, b.champion) || dropNote(M.ev, b.champion, b)]) : b.preliminary ? 'Projected draw' : 'Final not played yet'}</span>
               </button>
             </div>
           </div>
@@ -859,7 +956,7 @@ function PlayoffDesk({ t, M, b, sel, pick }: { t: Tournament; M: EventModel; b: 
         <span class="po-medal">3</span>
         <span style={{ minWidth: 0 }}>
           <span class="overline" style={{ display: 'block', fontSize: 10.5, color: 'var(--text-3)' }}>3rd place</span>
-          <span class="ell" style={{ display: 'block', fontSize: 15, fontWeight: 700 }}>{third ?? 'To be decided'}</span>
+          <span class="ell" style={{ display: 'block', fontSize: 15, fontWeight: 700 }} title={third ?? undefined}>{third ? shortName(third) : 'To be decided'}</span>
         </span>
       </button>
     </div>
@@ -879,8 +976,8 @@ function TreeRow({ t, M, b, m, side, ri, mi, sel, pick }: { t: Tournament; M: Ev
   const lose = !!m.winner && m.winner !== s.name;
   const me = s.name === sel;
   return (
-    <button class={`tm-row ${me ? 'me' : ''}`} onClick={() => pick(s.name!)} title={`${s.name} · ${origin(M, s.name)} · rating ${rating(t, s.name)}`}>
-      <span class="n ell" style={{ fontWeight: win || isBye(m) ? 700 : 520, color: me ? 'var(--accent-text)' : lose ? 'var(--text-2)' : 'var(--text)' }}>{s.name}</span>
+    <button class={`tm-row ${me ? 'me' : ''}`} onClick={() => pick(s.name!)} title={joinDots([s.name, origin(M, s.name) || dropNote(M.ev, s.name, b), `rating ${rating(t, s.name)}`])}>
+      <span class="n ell" style={{ fontWeight: win || isBye(m) ? 700 : 520, color: me ? 'var(--accent-text)' : lose ? 'var(--text-2)' : 'var(--text)' }}>{shortName(s.name)}</span>
       <span class={`tm-score ${win ? 'win' : s.score != null ? 'has' : ''}`}>{s.score ?? ''}</span>
     </button>
   );
@@ -904,7 +1001,7 @@ function KnockoutPhone({ t, M, ev, b, ui, setUi, openProfile }: { t: Tournament;
       <div class="view">
         {seg}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, padding: '0 4px' }}>
-          <span class="muted" style={{ fontSize: 14 }}>{b.players} players · round-robin · {bracketPlayed(b)}/{bracketTotal(b)} played</span>
+          <span class="muted" style={{ fontSize: 14 }}>{entrants(b, ev.teams)} · round-robin · {bracketPlayed(b)}/{bracketTotal(b)} played</span>
           <span class={`pill ${st.cls}`}>{st.label}</span>
         </div>
         <RoundRobin t={t} M={M} b={b} sel="" onPick={openProfile} desk={false} />
@@ -918,20 +1015,22 @@ function KnockoutPhone({ t, M, ev, b, ui, setUi, openProfile }: { t: Tournament;
   const isPo = !!po && ri === rounds.length - 1;
   const real = R.matches.filter((m) => !isBye(m));
   const byes = R.matches.length - real.length;
+  // In a feeder bracket two empty slots can meet: nothing to show for that match.
+  const shown = R.matches.map((m, k) => ({ m, k })).filter(({ m }) => !(m.a.bye && m.b.bye));
   const st = bracketStatus(b);
   const fm = b.rounds[b.rounds.length - 1].matches[0];
   return (
     <div class="view">
       {seg}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, padding: '0 4px' }}>
-        <span class="muted" style={{ fontSize: 14 }}>{b.players} players · {b.size}-player draw</span>
+        <span class="muted" style={{ fontSize: 14 }}>{entrants(b, ev.teams)} · {drawSize(b, ev.teams)}</span>
         <span class={`pill ${st.cls}`}>{st.label}</span>
       </div>
       <div class="chips-row" role="toolbar" aria-label="Rounds">
         {rounds.map((r, i) => (
           <button key={r.name} class="round-chip glass thin" aria-pressed={i === ri} onClick={() => setUi({ r: i })}>
             <b style={{ fontSize: 14 }}>{r.short}</b>
-            <span class="mono" style={{ fontSize: 12, opacity: 0.72 }}>{r.matches.length}</span>
+            <span class="mono" style={{ fontSize: 12, opacity: 0.72 }}>{r.matches.filter((m) => !(m.a.bye && m.b.bye)).length}</span>
           </button>
         ))}
       </div>
@@ -944,7 +1043,7 @@ function KnockoutPhone({ t, M, ev, b, ui, setUi, openProfile }: { t: Tournament;
           <span class="po-medal big">3</span>
           <span style={{ minWidth: 0 }}>
             <span class="overline" style={{ display: 'block', fontSize: 11, color: 'var(--text-2)' }}>{b.id} · {b.label} · 3rd place</span>
-            <span style={{ display: 'block', marginTop: 2, fontSize: 22, fontWeight: 700, letterSpacing: '-0.03em', lineHeight: 1.15 }}>{b.thirdPlace.winner}</span>
+            <span style={{ display: 'block', marginTop: 2, fontSize: 22, fontWeight: 700, letterSpacing: '-0.03em', lineHeight: 1.15 }}><Name name={b.thirdPlace.winner} /></span>
             <span class="muted" style={{ display: 'block', marginTop: 2, fontSize: 14 }}>Won the play-off 3/4 · rating {rating(t, b.thirdPlace.winner)}</span>
           </span>
         </button>
@@ -954,17 +1053,17 @@ function KnockoutPhone({ t, M, ev, b, ui, setUi, openProfile }: { t: Tournament;
           <span class="trophy"><Icon name="trophy" size={28} stroke={1.7} /></span>
           <span style={{ minWidth: 0 }}>
             <span class="overline" style={{ display: 'block', fontSize: 11, color: 'var(--accent-text)' }}>{b.id} · {b.label} champion</span>
-            <span style={{ display: 'block', marginTop: 2, fontSize: 24, fontWeight: 700, letterSpacing: '-0.03em', lineHeight: 1.15 }}>{b.champion}</span>
+            <span style={{ display: 'block', marginTop: 2, fontSize: 24, fontWeight: 700, letterSpacing: '-0.03em', lineHeight: 1.15 }}><Name name={b.champion} /></span>
             <span class="muted" style={{ display: 'block', marginTop: 2, fontSize: 14 }}>
               {(fm.a.name === b.champion ? fm.b.name : fm.a.name)
-                ? `Beat ${fm.a.name === b.champion ? fm.b.name : fm.a.name} ${fm.a.name === b.champion ? fm.a.score : fm.b.score}–${fm.a.name === b.champion ? fm.b.score : fm.a.score}`
+                ? `Beat ${shortName((fm.a.name === b.champion ? fm.b.name : fm.a.name)!)} ${fm.a.name === b.champion ? fm.a.score : fm.b.score}–${fm.a.name === b.champion ? fm.b.score : fm.a.score}`
                 : 'Won the title without a final to play'}{' '}
               · rating {rating(t, b.champion)}
             </span>
           </span>
         </button>
       )}
-      {R.matches.map((m, k) => {
+      {shown.map(({ m, k }) => {
         const bye = isBye(m);
         const played = isPlayed(m);
         const ready = !bye && !!m.a.name && !!m.b.name;
@@ -992,7 +1091,7 @@ function KnockoutPhone({ t, M, ev, b, ui, setUi, openProfile }: { t: Tournament;
               if (!s.name) {
                 return (
                   <button key={side} class="match-row" disabled>
-                    <span><span class="faint ell" style={{ display: 'block', fontSize: 16 }}>{feederLabel(b, ri, k, side)}</span><span class="faint" style={{ display: 'block', fontSize: 12 }}>Awaiting result</span></span>
+                    <span style={{ minWidth: 0 }}><span class="faint ell" style={{ display: 'block', fontSize: 16 }}>{feederLabel(b, ri, k, side)}</span><span class="faint" style={{ display: 'block', fontSize: 12 }}>{b.fromBracket && ri === 0 ? `Filled in as bracket ${b.fromBracket} is played` : 'Awaiting result'}</span></span>
                     <span />
                     <span class="score">–</span>
                   </button>
@@ -1000,11 +1099,13 @@ function KnockoutPhone({ t, M, ev, b, ui, setUi, openProfile }: { t: Tournament;
               }
               const win = !bye && m.winner === s.name;
               const lose = !!m.winner && m.winner !== s.name;
+              const team = teamMembers(s.name).length > 1;
+              const note = origin(M, s.name) || dropNote(ev, s.name, b);
               return (
-                <button key={side} class="match-row" onClick={() => openProfile(s.name!)}>
+                <button key={side} class={`match-row ${team ? 'team-row' : ''}`} onClick={() => openProfile(s.name!)}>
                   <span style={{ minWidth: 0 }}>
-                    <span class="ell" style={{ display: 'block', fontSize: 16, fontWeight: win || bye ? 700 : 560, color: lose ? 'var(--text-2)' : 'var(--text)' }}>{s.name}</span>
-                    <span class="faint ell" style={{ display: 'block', fontSize: 12 }}>{origin(M, s.name)}</span>
+                    <span class="ell" style={{ display: 'block', fontSize: team ? 15 : 16, lineHeight: team ? 1.3 : undefined, fontWeight: win || bye ? 700 : 560, color: lose ? 'var(--text-2)' : 'var(--text)' }}><Name name={s.name} /></span>
+                    {note && <span class="faint ell" style={{ display: 'block', fontSize: 12 }}>{note}</span>}
                   </span>
                   <span class="mono faint" style={{ fontSize: 13 }}>{rating(t, s.name)}</span>
                   <span class={`score ${win ? 'win' : bye ? 'none' : ''}`}>{s.score ?? (bye ? '' : '–')}</span>
@@ -1023,44 +1124,69 @@ function KnockoutPhone({ t, M, ev, b, ui, setUi, openProfile }: { t: Tournament;
 /* ------------------------------------------------------------------ */
 
 function PlayersView({ t, M, ui, setUi, desk, sel, openProfile }: { t: Tournament; M: EventModel; ui: Ui; setUi: (p: Partial<Ui>) => void; desk: boolean; sel: string; openProfile: (n: string) => void }) {
+  const ev = M.ev;
+  const ko = ev.knockoutOnly;
   const all = sortedPeople(t, M);
   const q = ui.q.trim().toLowerCase();
   const rows = all.map((name, i) => ({ name, pos: i + 1 })).filter((r) => !q || r.name.toLowerCase().includes(q));
-  const meta = rows.length === all.length ? `${all.length} players · sorted by rating` : `${rows.length} of ${all.length} players match “${ui.q}”`;
+  const word = noun(ev.teams, all.length);
+  const meta = rows.length === all.length ? `${all.length} ${word} · sorted by rating` : `${rows.length} of ${all.length} ${word} match “${ui.q}”`;
   const groupText = (name: string) => {
     const s = M.spot.get(name);
-    const f = finishOf(M.ev, name);
+    const f = finishOf(ev, name);
     if (s) return `Group ${s.group.label} · ${ord(s.player.rank)}${M.dest.get(s.player.rank) ? ` → ${M.dest.get(s.player.rank)}` : ''}`;
-    if (!M.ev.byes.includes(name)) return 'Not drawn yet';
+    if (!ev.byes.includes(name)) return 'Not drawn yet';
     return `Group-stage bye${f.bracket ? ` → ${f.bracket.id}` : ''}`;
   };
+  /** Knockout-only events: the brackets a team has played in, e.g. "A → B · Consolation". */
+  const runText = (paths: PlayerPath[]) => {
+    if (!paths.length) return 'Not drawn yet';
+    const last = paths[paths.length - 1].bracket;
+    return `${paths.map((p) => p.bracket.id).join(' → ')} · ${last.label}`;
+  };
+  const title = ev.teams ? 'Teams' : 'Players';
+  const empty = `No ${word} match that search.`;
   if (desk) {
     return (
       <div class="panel glass streak">
-        <h2 style={{ fontSize: 24, fontWeight: 700 }}>Players</h2>
+        <h2 style={{ fontSize: 24, fontWeight: 700 }}>{title}</h2>
         <div class="muted" style={{ fontSize: 14 }}>{meta}</div>
         <div style={{ marginTop: 18, overflowX: 'auto' }}>
           <div class="ptable">
-            <div class="prow head"><span>#</span><span>Player</span><span style={{ textAlign: 'right' }}>Rating</span><span style={{ textAlign: 'right' }}>Seed</span><span>Group</span><span style={{ textAlign: 'right' }}>W–L</span><span>Finish</span></div>
+            <div class="prow head">
+              <span>#</span>
+              <span>{ev.teams ? 'Team' : 'Player'}</span>
+              <span style={{ textAlign: 'right' }}>Rating</span>
+              <span style={{ textAlign: ko ? 'left' : 'right' }}>{ko ? 'Prov' : 'Seed'}</span>
+              <span>{ko ? 'Brackets' : 'Group'}</span>
+              <span style={{ textAlign: 'right' }}>W–L</span>
+              <span>Finish</span>
+            </div>
             {rows.map(({ name, pos }) => {
               const s = M.spot.get(name);
-              const f = finishOf(M.ev, name);
+              const f = finishOf(ev, name);
+              const paths = ko ? pathsOf(ev, name) : [];
+              const rec = knockoutRecord(paths);
               return (
                 <button key={name} class={`prow body ${sel === name ? 'sel' : ''}`} onClick={() => openProfile(name)}>
                   <span class="mono faint" style={{ fontSize: 13 }}>{pos}</span>
                   <span style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
                     <span class="avatar" style={{ width: 34, height: 34, fontSize: 12 }}>{initials(name)}</span>
-                    <span class="ell" style={{ fontSize: 15, fontWeight: 650 }}>{name}</span>
+                    <span class="ell" style={{ fontSize: ev.teams ? 14 : 15, fontWeight: 650, lineHeight: ev.teams ? 1.3 : undefined, minWidth: 0 }}><Name name={name} /></span>
                   </span>
                   <span class="mono" style={{ fontSize: 14, fontWeight: 600, textAlign: 'right' }}>{rating(t, name)}</span>
-                  <span class="mono muted" style={{ fontSize: 13, textAlign: 'right' }}>{s ? s.player.seed ?? '—' : M.ev.byes.includes(name) ? 'Bye' : '—'}</span>
-                  <span class="muted ell" style={{ fontSize: 13 }}>{groupText(name)}</span>
-                  <span class="mono" style={{ fontSize: 13, textAlign: 'right' }}>{s ? `${s.player.wins}–${s.player.losses}` : '—'}</span>
+                  {ko ? (
+                    <span class="muted ell" style={{ fontSize: 13 }}>{t.players[name]?.province || '—'}</span>
+                  ) : (
+                    <span class="mono muted" style={{ fontSize: 13, textAlign: 'right' }}>{s ? s.player.seed ?? '—' : ev.byes.includes(name) ? 'Bye' : '—'}</span>
+                  )}
+                  <span class="muted ell" style={{ fontSize: 13 }}>{ko ? runText(paths) : groupText(name)}</span>
+                  <span class="mono" style={{ fontSize: 13, textAlign: 'right' }}>{ko ? (paths.length ? `${rec.w}–${rec.l}` : '—') : s ? `${s.player.wins}–${s.player.losses}` : '—'}</span>
                   <span><span class={`pill fin-${f.kind}`} style={{ textTransform: 'none', letterSpacing: 0, fontSize: 12 }}>{f.short}</span></span>
                 </button>
               );
             })}
-            {rows.length === 0 && <div class="empty">No players match that search.</div>}
+            {rows.length === 0 && <div class="empty">{empty}</div>}
           </div>
         </div>
       </div>
@@ -1070,19 +1196,20 @@ function PlayersView({ t, M, ui, setUi, desk, sel, openProfile }: { t: Tournamen
     <div class="view">
       <label class="search glass" style={{ height: 52, borderRadius: 26 }}>
         <Icon name="search" size={20} stroke={2} class="faint" />
-        <span class="sr-only">Search players</span>
-        <input type="search" placeholder="Search players" value={ui.q} onInput={(e) => setUi({ q: (e.target as HTMLInputElement).value })} style={{ fontSize: 16 }} />
+        <span class="sr-only">Search {word}</span>
+        <input type="search" placeholder={`Search ${noun(ev.teams, 2)}`} value={ui.q} onInput={(e) => setUi({ q: (e.target as HTMLInputElement).value })} style={{ fontSize: 16 }} />
       </label>
       <div class="faint" style={{ fontSize: 13, padding: '0 4px' }}>{meta}</div>
       <div class="plist glass">
         {rows.map(({ name, pos }) => {
-          const f = finishOf(M.ev, name);
+          const f = finishOf(ev, name);
+          const sub = ko ? runText(pathsOf(ev, name)) : `${M.spot.get(name) ? `Seed ${M.spot.get(name)!.player.seed} · ` : ''}${groupText(name)}`;
           return (
             <button key={name} class="plist-row" onClick={() => openProfile(name)}>
               <span class="mono" style={{ width: 36, height: 36, borderRadius: 12, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, fontWeight: 600, background: 'var(--chip)', color: 'var(--text-2)' }}>{pos}</span>
-              <span style={{ minWidth: 0 }}>
-                <span class="ell" style={{ display: 'block', fontSize: 15, fontWeight: 650 }}>{name}</span>
-                <span class="faint ell" style={{ display: 'block', fontSize: 12 }}>{M.spot.get(name) ? `Seed ${M.spot.get(name)!.player.seed} · ` : ''}{groupText(name)}</span>
+              <span style={{ minWidth: 0, padding: ev.teams ? '8px 0' : undefined }}>
+                <span class="ell" style={{ display: 'block', fontSize: 15, fontWeight: 650, lineHeight: ev.teams ? 1.3 : undefined }}><Name name={name} /></span>
+                <span class="faint ell" style={{ display: 'block', fontSize: 12 }}>{sub}</span>
               </span>
               <span style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4 }}>
                 <span class="mono" style={{ fontSize: 14, fontWeight: 600 }}>{rating(t, name)}</span>
@@ -1091,7 +1218,7 @@ function PlayersView({ t, M, ui, setUi, desk, sel, openProfile }: { t: Tournamen
             </button>
           );
         })}
-        {rows.length === 0 && <div class="empty">No players match that search.</div>}
+        {rows.length === 0 && <div class="empty">{empty}</div>}
       </div>
     </div>
   );
@@ -1103,24 +1230,50 @@ function PlayersView({ t, M, ui, setUi, desk, sel, openProfile }: { t: Tournamen
 
 function Dock({ t, ev, sel, open, clear }: { t: Tournament; ev: EventData; sel: string; open: () => void; clear: () => void }) {
   const f = finishOf(ev, sel);
-  const p = pathOf(ev, sel);
+  const paths = pathsOf(ev, sel);
+  const many = paths.length > 1;
+  const steps = paths.flatMap((p) => p.steps.map((st) => ({ st, bid: p.bracket.id })));
   const champ = f.kind === 'champ';
   return (
-    <div class="dock glass-strong streak" role="region" aria-label="Selected player">
+    <div class="dock glass-strong streak" role="region" aria-label={ev.teams ? 'Selected team' : 'Selected player'}>
       <span class="avatar" style={{ width: 48, height: 48, fontSize: 15, background: champ ? 'var(--accent)' : 'var(--lens)', color: champ ? 'var(--accent-ink)' : 'var(--text)', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.5)' }}>{initials(sel)}</span>
       <span style={{ flex: 1, minWidth: 0 }}>
-        <span class="ell" style={{ display: 'block', fontSize: 15, fontWeight: 700 }}>{sel} <span class="mono faint" style={{ fontWeight: 500, fontSize: 13 }}>{rating(t, sel)}</span></span>
+        <span class="ell" style={{ display: 'block', fontSize: 15, fontWeight: 700 }} title={sel}>{shortName(sel)} <span class="mono faint" style={{ fontWeight: 500, fontSize: 13 }}>{rating(t, sel)}</span></span>
         <span class="muted ell" style={{ display: 'block', fontSize: 13 }}>{f.long} · {f.sub}</span>
       </span>
       <span style={{ display: 'flex', gap: 6, flex: 'none' }}>
-        {(p?.steps ?? []).filter((s) => s.res !== 'bye').slice(-4).map((s) => (
-          <span key={s.round.name} class="chip" style={{ height: 30, borderRadius: 15, background: s.res === 'won' ? 'var(--accent-soft)' : s.res === 'lost' ? 'var(--chip-strong)' : 'var(--blue-soft)', color: s.res === 'won' ? 'var(--accent-text)' : s.res === 'lost' ? 'var(--text-2)' : 'var(--blue-text)', border: 0 }}>
-            {s.round.short} <span class="mono">{s.res === 'pending' ? 'next' : `${s.my}–${s.os}`}</span>
+        {steps.filter(({ st }) => st.res !== 'bye').slice(-4).map(({ st, bid }) => (
+          <span key={`${bid}-${st.round.name}`} class="chip" style={{ height: 30, borderRadius: 15, background: st.res === 'won' ? 'var(--accent-soft)' : st.res === 'lost' ? 'var(--chip-strong)' : 'var(--blue-soft)', color: st.res === 'won' ? 'var(--accent-text)' : st.res === 'lost' ? 'var(--text-2)' : 'var(--blue-text)', border: 0 }}>
+            {many ? `${bid} ` : ''}{st.round.short} <span class="mono">{st.res === 'pending' ? 'next' : `${st.my}–${st.os}`}</span>
           </span>
         ))}
       </span>
       <button class="btn btn-accent" onClick={open}>Profile</button>
       <button class="btn btn-round" aria-label="Clear selection" onClick={clear} style={{ background: 'var(--chip)', border: '1px solid var(--chip-border)' }}><Icon name="close" size={18} stroke={2.2} /></button>
+    </div>
+  );
+}
+
+/** One bracket run in a profile: each round, the opponent, the score and the result. */
+function RunList({ t, M, run }: { t: Tournament; M: EventModel; run: PlayerPath }) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 10 }}>
+      {run.steps.map((st) => {
+        const team = !!st.opp && teamMembers(st.opp).length > 1;
+        return (
+          <div class="path-row" key={st.round.name}>
+            <span style={{ height: 28, borderRadius: 9, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, fontWeight: 750, background: 'var(--chip-strong)' }}>{st.round.short}</span>
+            <span style={{ minWidth: 0 }}>
+              <span class="ell" style={{ display: 'block', fontSize: team ? 13.5 : 14, fontWeight: 650, lineHeight: team ? 1.3 : undefined }}>{st.opp ? <Name name={st.opp} /> : st.oppLabel}</span>
+              <span class="faint ell" style={{ display: 'block', fontSize: 12 }}>
+                {st.opp ? joinDots([origin(M, st.opp), `rating ${rating(t, st.opp)}`]) : st.res === 'bye' ? 'Advanced automatically' : 'Awaiting result'}
+              </span>
+            </span>
+            <span class="mono" style={{ fontSize: 15, fontWeight: 700 }}>{st.res === 'bye' ? '' : st.my != null && st.os != null ? `${st.my}–${st.os}` : '–'}</span>
+            <span class={`res ${st.res}`}>{st.res === 'won' ? 'W' : st.res === 'lost' ? 'L' : st.res === 'bye' ? 'Bye' : 'Next'}</span>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -1138,19 +1291,24 @@ function Profile({ t, M, ev, name, open, close }: { t: Tournament; M: EventModel
   const info = t.players[name];
   const s = M.spot.get(name);
   const f = finishOf(ev, name);
-  const p = pathOf(ev, name);
+  const runs = pathsOf(ev, name);
   const rrB = ev.brackets.find((b) => b.format === 'roundrobin' && b.table?.players.some((x) => x.name === name));
   const champ = f.kind === 'champ';
   const lp = formatDate(info?.lastPlayed ?? null);
-  const tags = [info?.province, info?.gender ? `Gender ${info.gender}` : '', s ? `Seed ${s.player.seed ?? '—'}` : ev.byes.includes(name) ? 'Group-stage bye' : '', info?.temp ? 'Temp' : ''].filter(Boolean);
+  const members = teamMembers(name);
+  const team = members.length > 1;
+  const rec = knockoutRecord(runs);
+  const tags = team
+    ? [info?.province, 'Doubles team'].filter(Boolean)
+    : [info?.province, info?.gender ? `Gender ${info.gender}` : '', s ? `Seed ${s.player.seed ?? '—'}` : ev.byes.includes(name) ? 'Group-stage bye' : '', info?.temp ? 'Temp' : ''].filter(Boolean);
   const gPlayed = s ? groupPlayed(s.group) : 0;
   const gTotal = s ? groupTotal(s.group) : 0;
   const pts = hasPoints(ev);
   const cols = pts ? '22px minmax(0,1fr) 46px 36px 30px' : '22px minmax(0,1fr) 46px 36px';
   return (
     <>
-      <button class={`scrim ${open ? 'open' : ''}`} aria-label="Close player profile" tabIndex={open ? 0 : -1} onClick={close} />
-      <aside class={`sheet glass-strong streak ${open ? 'open' : ''}`} aria-label="Player profile" aria-hidden={!open}>
+      <button class={`scrim ${open ? 'open' : ''}`} aria-label="Close profile" tabIndex={open ? 0 : -1} onClick={close} />
+      <aside class={`sheet glass-strong streak ${open ? 'open' : ''}`} aria-label={team ? 'Team profile' : 'Player profile'} aria-hidden={!open}>
         <div class="sheet-scroll" ref={ref}>
           <div class="grabber" />
           <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
@@ -1158,7 +1316,7 @@ function Profile({ t, M, ev, name, open, close }: { t: Tournament; M: EventModel
               <span class="avatar" style={{ width: 62, height: 62, fontSize: 20, background: champ ? 'var(--accent)' : 'var(--lens)', color: champ ? 'var(--accent-ink)' : 'var(--text)', boxShadow: `inset 0 1px 0 rgba(255,255,255,0.55), 0 10px 26px ${champ ? 'var(--accent-glow)' : 'rgba(0,0,0,0.25)'}` }}>{initials(name)}</span>
               <div style={{ minWidth: 0 }}>
                 <div class="faint" style={{ fontSize: 12, fontWeight: 650 }}>{ev.name}{f.bracket ? ` · ${f.bracket.id} ${f.bracket.label}` : ''}</div>
-                <h2 style={{ fontSize: 26, fontWeight: 700, letterSpacing: '-0.03em', lineHeight: 1.12 }}>{name}</h2>
+                <h2 style={{ fontSize: team ? 22 : 26, fontWeight: 700, letterSpacing: '-0.03em', lineHeight: team ? 1.2 : 1.12 }}><Name name={name} /></h2>
               </div>
             </div>
             <button class="btn btn-round" aria-label="Close" onClick={close} tabIndex={open ? 0 : -1} style={{ background: 'var(--chip)', border: '1px solid var(--chip-border)' }}><Icon name="close" size={18} stroke={2.2} /></button>
@@ -1175,12 +1333,38 @@ function Profile({ t, M, ev, name, open, close }: { t: Tournament; M: EventModel
               <span class="muted" style={{ display: 'block', fontSize: 13 }}>{f.sub}</span>
             </span>
           </div>
+          {team && (
+            <>
+              <div class="tiles">
+                <div class="tile"><div class="faint" style={{ fontSize: 12, fontWeight: 600 }}>Team rating</div><span class="mono">{info?.rating ?? '—'}</span><div class="faint" style={{ fontSize: 12 }}>From the event tab</div></div>
+                <div class="tile"><div class="faint" style={{ fontSize: 12, fontWeight: 600 }}>Knockout</div><span class="mono">{runs.length ? `${rec.w}–${rec.l}` : '—'}</span><div class="faint ell" style={{ fontSize: 12 }}>{runs.length ? runs.map((r) => { const x = knockoutRecord([r]); return `${r.bracket.id} ${x.w}–${x.l}`; }).join(' · ') : 'Not drawn yet'}</div></div>
+              </div>
+              <div class="section-head" style={{ padding: 0, marginTop: 22 }}><h3 style={{ fontSize: 17 }}>Partners</h3><span class="faint" style={{ fontSize: 12 }}>From the ranking list</span></div>
+              <div class="partners">
+                {members.map((m) => {
+                  const pi = t.players[m];
+                  return (
+                    <div class="partner-row" key={m}>
+                      <span class="avatar" style={{ width: 38, height: 38, fontSize: 13 }}>{initials(m)}</span>
+                      <span style={{ minWidth: 0 }}>
+                        <span class="ell" style={{ display: 'block', fontSize: 15, fontWeight: 650 }}>{m}</span>
+                        <span class="faint ell" style={{ display: 'block', fontSize: 12 }}>{pi ? joinDots([pi.province, pi.gender && `Gender ${pi.gender}`, pi.listRank ? `#${pi.listRank} of ${t.rankCount}` : '']) || 'On the ranking list' : 'Not on the ranking list'}</span>
+                      </span>
+                      <span class="mono" style={{ fontSize: 16, fontWeight: 650 }}>{pi?.rating ?? '—'}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </>
+          )}
+          {!team && (
           <div class="tiles">
             <div class="tile"><div class="faint" style={{ fontSize: 12, fontWeight: 600 }}>Rating</div><span class="mono">{info?.rating ?? '—'}</span><div class="faint" style={{ fontSize: 12 }}>{info?.temp ? 'Temp flag on' : 'From the ranking list'}</div></div>
             <div class="tile"><div class="faint" style={{ fontSize: 12, fontWeight: 600 }}>List rank</div><span class="mono">{info?.listRank ? `#${info.listRank}` : '—'}</span><div class="faint" style={{ fontSize: 12 }}>{info?.listRank ? `of ${t.rankCount} players` : 'Not on the list'}</div></div>
             <div class="tile"><div class="faint" style={{ fontSize: 12, fontWeight: 600 }}>Last played</div><span class="mono">{lp.main}</span><div class="faint" style={{ fontSize: 12 }}>{lp.year}</div></div>
             <div class="tile"><div class="faint" style={{ fontSize: 12, fontWeight: 600 }}>{s ? s.group.name : 'Group stage'}</div><span class="mono">{s ? `${ord(s.player.rank)} · ${s.player.wins}–${s.player.losses}` : ev.byes.includes(name) ? 'Bye' : '—'}</span><div class="faint" style={{ fontSize: 12 }}>{s ? (M.dest.get(s.player.rank) ? `Into bracket ${M.dest.get(s.player.rank)}` : 'Group stage') : ev.byes.includes(name) ? 'Skipped the groups' : 'Not drawn yet'}</div></div>
           </div>
+          )}
           {rrB?.table && (
             <>
               <div class="section-head" style={{ padding: 0, marginTop: 22 }}><h3 style={{ fontSize: 17 }}>{rrB.id} · {rrB.label} round-robin</h3><span class="mono faint" style={{ fontSize: 12 }}>{bracketPlayed(rrB)}/{bracketTotal(rrB)} played</span></div>
@@ -1189,24 +1373,15 @@ function Profile({ t, M, ev, name, open, close }: { t: Tournament; M: EventModel
               </div>
             </>
           )}
-          {p && (
-            <>
-              <div class="section-head" style={{ padding: 0, marginTop: 22 }}><h3 style={{ fontSize: 17 }}>Knockout · {p.bracket.id} {p.bracket.label}</h3><span class="faint" style={{ fontSize: 12 }}>{p.bracket.players} players</span></div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 10 }}>
-                {p.steps.map((st) => (
-                  <div class="path-row" key={st.round.name}>
-                    <span style={{ height: 28, borderRadius: 9, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, fontWeight: 750, background: 'var(--chip-strong)' }}>{st.round.short}</span>
-                    <span style={{ minWidth: 0 }}>
-                      <span class="ell" style={{ display: 'block', fontSize: 14, fontWeight: 650 }}>{st.oppLabel}</span>
-                      <span class="faint ell" style={{ display: 'block', fontSize: 12 }}>{st.opp ? `${origin(M, st.opp)} · ${rating(t, st.opp)}` : st.res === 'bye' ? 'Advanced automatically' : 'Awaiting result'}</span>
-                    </span>
-                    <span class="mono" style={{ fontSize: 15, fontWeight: 700 }}>{st.res === 'bye' ? '' : st.my != null && st.os != null ? `${st.my}–${st.os}` : '–'}</span>
-                    <span class={`res ${st.res}`}>{st.res === 'won' ? 'W' : st.res === 'lost' ? 'L' : st.res === 'bye' ? 'Bye' : 'Next'}</span>
-                  </div>
-                ))}
+          {runs.map((run, i) => (
+            <div key={run.bracket.id}>
+              <div class="section-head" style={{ padding: 0, marginTop: 22 }}>
+                <h3 style={{ fontSize: 17 }}>Knockout · {run.bracket.id} {run.bracket.label}</h3>
+                <span class="faint" style={{ fontSize: 12 }}>{i > 0 && run.bracket.fromBracket ? `Dropped from ${run.bracket.fromBracket}` : entrants(run.bracket, ev.teams).toLowerCase()}</span>
               </div>
-            </>
-          )}
+              <RunList t={t} M={M} run={run} />
+            </div>
+          ))}
           {s && (
             <>
               <div class="section-head" style={{ padding: 0, marginTop: 22 }}><h3 style={{ fontSize: 17 }}>{s.group.name}</h3><span class="mono faint" style={{ fontSize: 12 }}>{gPlayed}/{gTotal} played</span></div>

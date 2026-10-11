@@ -1,4 +1,7 @@
+import { shortName, teamMembers } from '../shared/names';
 import type { Bracket, EventData, Group, GroupPlayer, Match, PlayerInfo, Round, Tournament } from '../shared/types';
+
+export { isTeam, shortName, teamMembers } from '../shared/names';
 
 export interface GroupSpot {
   group: Group;
@@ -104,6 +107,8 @@ export function eventModel(ev: EventData): EventModel {
   const kTotal = ev.brackets.reduce((a, b) => a + bracketTotal(b), 0);
   const kPlayed = ev.brackets.reduce((a, b) => a + bracketPlayed(b), 0);
   let stage: Stage = ev.groups.length || ev.brackets.length ? 'groups' : 'draw';
+  // No group stage (doubles): the knockout is next as soon as the brackets are drawn.
+  if (ev.knockoutOnly && ev.brackets.length) stage = 'next';
   if (ev.brackets.length && ev.brackets.every(bracketDone)) stage = 'done';
   else if (ev.brackets.some((b) => b.preliminary)) stage = 'pre';
   else if (kPlayed > 0) stage = 'live';
@@ -120,6 +125,45 @@ export const STAGE_LABEL: Record<Stage, string> = {
   draw: 'Draw pending',
 };
 
+/** "player" / "team", for counts. */
+export const noun = (teams: boolean, n: number) => (teams ? 'team' : 'player') + (n === 1 ? '' : 's');
+
+/** A feeder bracket's slots fill in as Bracket A is played; until then its count is "up to". */
+export function feederPending(b: Bracket): boolean {
+  return !!b.fromBracket && (b.rounds[0]?.matches ?? []).some((m) => (!m.a.name && !m.a.bye) || (!m.b.name && !m.b.bye));
+}
+
+/** "8 teams", "Up to 6 teams", "27 players". */
+export function entrants(b: Bracket, teams: boolean): string {
+  return `${feederPending(b) ? 'Up to ' : ''}${b.players} ${noun(teams, b.players)}`;
+}
+
+/** "32-player draw", "8-team draw". */
+export const drawSize = (b: Bracket, teams: boolean) => `${b.size}-${teams ? 'team' : 'player'} draw`;
+
+/**
+ * How teams move between the brackets of a knockout-only (doubles) event, as
+ * Tournament Tools runs it: everyone starts in A; with two brackets, a team
+ * that loses its first match drops to B; with three, round-1 losers drop to C
+ * and round-2 losers to B.
+ */
+export function dropRules(ev: EventData): { bracket: Bracket; rule: string }[] {
+  const feeders = ev.brackets.filter((b) => b.fromBracket);
+  const A = ev.brackets.find((b) => !b.fromBracket);
+  // With three brackets, B takes A's round-2 losers and C its round-1 losers. When the round-1 losers were too few
+  // for a C, B alone still takes the round-2 losers: one per round-2 match, a quarter of A's draw. (Two brackets
+  // always give B more than that.)
+  const roundTwo = (b: Bracket) => (feeders.length >= 2 ? b === feeders[0] : !!A && A.size >= 8 && b.upTo === A.size / 4);
+  const one = ev.teams ? 'team' : 'player';
+  const who = ev.teams ? 'Teams' : 'Players';
+  return ev.brackets.map((b) => {
+    if (!b.fromBracket) return { bracket: b, rule: feeders.length ? `Every ${one} starts here` : `Every ${one} plays here` };
+    const from = b.fromBracket;
+    if (roundTwo(b)) return { bracket: b, rule: `${who} that lose in round 2 of ${from}` };
+    return { bracket: b, rule: feeders.length >= 2 ? `${who} that lose in round 1 of ${from}` : `${who} that lose their first match in ${from}` };
+  });
+}
+
 export const ord = (n: number) => {
   const s = ['th', 'st', 'nd', 'rd'];
   const v = n % 100;
@@ -127,6 +171,13 @@ export const ord = (n: number) => {
 };
 
 export function initials(name: string) {
+  const members = teamMembers(name);
+  if (members.length > 1) {
+    return members
+      .slice(0, 2)
+      .map((m) => m[0]!.toUpperCase())
+      .join('');
+  }
   return name
     .split(/[\s-]+/)
     .filter(Boolean)
@@ -166,7 +217,7 @@ export interface PlayerPath {
 }
 
 export function feederLabel(b: Bracket, ri: number, mi: number, side: 'a' | 'b'): string {
-  if (ri === 0) return 'To be decided';
+  if (ri === 0) return b.fromBracket ? `Drops from Bracket ${b.fromBracket}` : 'To be decided';
   if (ri >= b.rounds.length) return `Loser of SF · M${side === 'a' ? 1 : 2}`;
   return `Winner of ${b.rounds[ri - 1].short} · M${2 * mi + (side === 'a' ? 1 : 2)}`;
 }
@@ -176,7 +227,12 @@ export function playoffRound(b: Bracket): Round | null {
   return b.thirdPlace ? { name: 'Play-off 3/4', short: '3rd', matches: [b.thirdPlace] } : null;
 }
 
-export function pathOf(ev: EventData, name: string): PlayerPath | null {
+/**
+ * Every bracket run a player (or team) has, in bracket order. Singles players
+ * play one bracket; a doubles team that loses early in A plays on in B or C.
+ */
+export function pathsOf(ev: EventData, name: string): PlayerPath[] {
+  const out: PlayerPath[] = [];
   for (const bracket of ev.brackets) {
     const steps: Step[] = [];
     const po = playoffRound(bracket);
@@ -194,9 +250,40 @@ export function pathOf(ev: EventData, name: string): PlayerPath | null {
         steps.push({ round, ri, mi, match, opp: other.name, oppLabel, my: me.score, os: other.score, res });
       }),
     );
-    if (steps.length) return { bracket, steps };
+    if (steps.length) out.push({ bracket, steps });
   }
-  return null;
+  return out;
+}
+
+/**
+ * The run that decides where a player finished. Singles players have one. A
+ * doubles team that dropped plays on in B or C, so that run decides, with two
+ * exceptions in small draws, where a team can drop after reaching A's final or
+ * play-off: a run with a match still to play comes first (A before B), and
+ * after that a final or play-off in A outranks the result in B or C.
+ */
+export function pathOf(ev: EventData, name: string): PlayerPath | null {
+  const all = pathsOf(ev, name);
+  if (all.length < 2) return all[0] ?? null;
+  const last = (p: PlayerPath) => p.steps[p.steps.length - 1];
+  const pending = all.find((p) => last(p).res === 'pending');
+  if (pending) return pending;
+  const medal = all.find((p) => !p.bracket.fromBracket && (p.bracket.champion === name || ['Final', '3rd'].includes(last(p).round.short)));
+  return medal ?? all[all.length - 1];
+}
+
+/** Knockout wins and losses over every bracket (byes don't count). */
+export function knockoutRecord(paths: PlayerPath[]): { w: number; l: number } {
+  const steps = paths.flatMap((p) => p.steps);
+  return { w: steps.filter((s) => s.res === 'won').length, l: steps.filter((s) => s.res === 'lost').length };
+}
+
+/** For a team in a feeder bracket: where it dropped from, e.g. "Dropped from A · R1". */
+export function dropNote(ev: EventData, name: string, b: Bracket): string {
+  if (!b.fromBracket) return '';
+  const from = pathsOf(ev, name).find((p) => p.bracket.id === b.fromBracket);
+  const lost = from?.steps.find((s) => s.res === 'lost');
+  return lost ? `Dropped from ${b.fromBracket} · ${lost.round.short}` : `Dropped from ${b.fromBracket}`;
 }
 
 export type FinishKind = 'champ' | 'runner' | 'third' | 'out' | 'alive' | 'none';
@@ -242,27 +329,59 @@ export function finishOf(ev: EventData, name: string): Finish {
     return { kind: 'alive', short: 'Playing', long: `Playing the ${rr.label} round-robin`, sub: `${me.wins}–${me.losses} so far · currently ${ord(me.rank)}`, bracket: rr };
   }
   const p = pathOf(ev, name);
-  if (!p) return { kind: 'none', short: 'Groups', long: 'Not in a knockout draw yet', sub: 'Waiting on the group stage', bracket: null };
+  if (!p) {
+    return ev.knockoutOnly
+      ? { kind: 'none', short: 'Draw', long: 'Not in a bracket yet', sub: 'Waiting on the bracket draw', bracket: null }
+      : { kind: 'none', short: 'Groups', long: 'Not in a knockout draw yet', sub: 'Waiting on the group stage', bracket: null };
+  }
+  const f = runFinish(ev, name, p);
+  // In small doubles draws a team can reach A's final or play-off and still drop to B: name the other result too.
+  const notes = pathsOf(ev, name)
+    .filter((o) => o.bracket.id !== p.bracket.id)
+    .map((o) => placing(runFinish(ev, name, o)))
+    .filter(Boolean);
+  return notes.length ? { ...f, sub: `${f.sub} · ${notes.join(' · ')}` } : f;
+}
+
+/** "won Consolation", "Championship runner-up", "3rd in Consolation"; '' for other finishes. */
+function placing(f: Finish): string {
+  const label = f.bracket?.label ?? '';
+  if (f.kind === 'champ') return `won ${label}`;
+  if (f.kind === 'runner') return `${label} runner-up`;
+  if (f.kind === 'third') return `3rd in ${label}`;
+  if (f.short === '4th') return `4th in ${label}`;
+  return '';
+}
+
+/** Where one bracket run ended (or stands), on its own. */
+function runFinish(ev: EventData, name: string, p: PlayerPath): Finish {
   const last = p.steps[p.steps.length - 1];
   const wins = p.steps.filter((s) => s.res === 'won').length;
   const b = p.bracket;
+  const opp = last.opp ? shortName(last.opp) : '';
+  const vs = opp || (b.fromBracket && last.ri === 0 ? `the ${ev.teams ? 'team' : 'player'} that drops from Bracket ${b.fromBracket}` : last.oppLabel);
   if (last.round.short === '3rd') {
     if (last.res === 'won') return { kind: 'third', short: '3rd place', long: '3rd place', sub: `Won the play-off 3/4 ${last.my}–${last.os}`, bracket: b };
     if (last.res === 'bye') return { kind: 'third', short: '3rd place', long: '3rd place', sub: 'No play-off opponent', bracket: b };
-    if (last.res === 'lost') return { kind: 'out', short: '4th', long: '4th place', sub: `Lost the play-off 3/4 to ${last.opp} ${last.my}–${last.os}`, bracket: b };
-    return { kind: 'alive', short: 'Play-off', long: 'Playing for 3rd place', sub: `Play-off 3/4 vs ${last.oppLabel}`, bracket: b };
+    if (last.res === 'lost') return { kind: 'out', short: '4th', long: '4th place', sub: `Lost the play-off 3/4 to ${opp} ${last.my}–${last.os}`, bracket: b };
+    return { kind: 'alive', short: 'Play-off', long: 'Playing for 3rd place', sub: `Play-off 3/4 vs ${vs}`, bracket: b };
   }
   if (b.champion === name) {
-    return { kind: 'champ', short: 'Champion', long: `${b.label} champion`, sub: `${wins} knockout ${wins === 1 ? 'win' : 'wins'} without a loss`, bracket: b };
+    const sub = b.fromBracket
+      ? wins > 0
+        ? `${wins} ${wins === 1 ? 'win' : 'wins'} in ${b.label} after dropping from ${b.fromBracket}`
+        : `Won ${b.label} on byes after dropping from ${b.fromBracket}`
+      : `${wins} knockout ${wins === 1 ? 'win' : 'wins'} without a loss`;
+    return { kind: 'champ', short: 'Champion', long: `${b.label} champion`, sub, bracket: b };
   }
   if (last.res === 'lost') {
     if (last.round.short === 'Final') {
       return { kind: 'runner', short: 'Runner-up', long: 'Runner-up', sub: `Lost the ${b.label} final ${last.my}–${last.os}`, bracket: b };
     }
-    return { kind: 'out', short: last.round.short, long: `Out in ${IN_ROUND[last.round.short] ?? last.round.name}`, sub: `Lost to ${last.opp} ${last.my}–${last.os}`, bracket: b };
+    return { kind: 'out', short: last.round.short, long: `Out in ${IN_ROUND[last.round.short] ?? last.round.name}`, sub: `Lost to ${opp} ${last.my}–${last.os}`, bracket: b };
   }
   if (last.res === 'pending') {
-    return { kind: 'alive', short: 'Alive', long: `Still alive in ${b.label}`, sub: `Next: ${NEXT_ROUND[last.round.short] ?? last.round.name} vs ${last.oppLabel}`, bracket: b };
+    return { kind: 'alive', short: 'Alive', long: `Still alive in ${b.label}`, sub: `Next: ${NEXT_ROUND[last.round.short] ?? last.round.name} vs ${vs}`, bracket: b };
   }
   return { kind: 'alive', short: 'Alive', long: `Still alive in ${b.label}`, sub: 'Through to the next round', bracket: b };
 }

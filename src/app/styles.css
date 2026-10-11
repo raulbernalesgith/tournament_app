@@ -469,3 +469,16 @@ h1, h2, h3 { margin: 0; letter-spacing: -0.02em; }
 .po-third:disabled .po-medal { background: var(--chip-strong); color: var(--text-3); box-shadow: none; }
 .champ-card.po-phone { border-color: rgba(168, 100, 46, 0.45) !important; }
 .fin-third { background: linear-gradient(145deg, #e9a96f, #a8642e); color: #fff7ef; }
+
+/* Doubles: a team's partners on two lines, how teams move between brackets, partner rows */
+.team { display: flex; flex-direction: column; min-width: 0; }
+.team-line { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.match-row.team-row { min-height: 62px; padding: 6px 0; }
+.drop-list { display: flex; flex-direction: column; gap: 2px; margin: 14px -8px 0; }
+.drop-row { appearance: none; border: 0; background: transparent; margin: 0; cursor: pointer; text-align: left; width: 100%; display: grid; grid-template-columns: 34px minmax(0, 1fr) 18px; align-items: center; gap: 12px; padding: 8px; border-radius: 16px; color: inherit; transition: background-color 0.2s ease; }
+.drop-row:hover { background: var(--chip); }
+.partners { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
+.partner-row { display: grid; grid-template-columns: 38px minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 10px 12px; border-radius: 18px; background: var(--chip); border: 1px solid var(--chip-border); }
+.tree.teams .tree-col { width: 206px; }
+.tree.teams .tree-col.champ { width: 212px; }
+.tm-card.voidcard { opacity: 0.4; }

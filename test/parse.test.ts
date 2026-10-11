@@ -4,10 +4,11 @@ import wb1007 from './fixtures/workbook-2026-10-07.grids.json';
 import wb1009 from './fixtures/workbook-2026-10-09.grids.json';
 import snapshot from '../src/data/snapshot.grids.json';
 import { buildTournament, fingerprint, ittfOrder, parseSets } from '../src/shared/parse';
-import type { Cell, Grid, GroupMatch, GroupPlayer, Workbook } from '../src/shared/types';
+import type { Bracket, Cell, Grid, GroupMatch, GroupPlayer, Workbook } from '../src/shared/types';
 import { parseCsv } from '../src/worker/csv';
 import { parseTabs, tabsFromHtml } from '../src/worker/sheets';
 import { put as putAt, v5Tab } from './v5';
+import { higherRatedWins, teams, v7DoublesTab } from './v7';
 
 const SRC = { kind: 'snapshot', label: 'test' } as const;
 const build = (wb: Workbook) => buildTournament(wb, SRC, new Date('2026-10-05T00:00:00Z'));
@@ -641,6 +642,150 @@ describe('Tournament Tools v5 layout (one draw in G:Y, divisions from AB)', () =
 
   it('gives the same tournament through the CSV export', () => {
     const wb: Workbook = { title: 'v5', sheets: { Canada_Rankings: rankings, Club_Open: v5Tab({ drawLabel: 'Serpentine' }) } };
+    expect(build(viaCsv(wb)).events).toEqual(build(wb).events);
+  });
+});
+
+describe('Tournament Tools v7 doubles (no group stage, brackets A / B / C)', () => {
+  const rankings = (wb1009 as unknown as Workbook).sheets['Canada_Rankings'];
+  const doubles = (tab: Grid) => build({ title: 'x', sheets: { Canada_Rankings: rankings, Open_Doubles: tab } });
+  const names = (b: Bracket) => b.rounds[0].matches.flatMap((m) => [m.a, m.b]).filter((s) => s.name).map((s) => s.name!);
+  /** Teams that lost their first real match in A (byes don't count), and teams that lost in a given A round. */
+  const firstLosses = (a: Bracket) => {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    a.rounds.forEach((r) =>
+      r.matches.forEach((m) => {
+        if (m.a.bye || m.b.bye || !m.a.name || !m.b.name) return;
+        for (const s of [m.a, m.b]) {
+          if (seen.has(s.name!)) continue;
+          seen.add(s.name!);
+          if (m.winner && m.winner !== s.name) out.push(s.name!);
+        }
+      }),
+    );
+    return out.sort();
+  };
+  const lostIn = (a: Bracket, ri: number) =>
+    a.rounds[ri].matches.filter((m) => m.winner && !m.a.bye && !m.b.bye).map((m) => (m.winner === m.a.name ? m.b.name! : m.a.name!)).sort();
+
+  it('publishes the teams before the brackets are drawn: no group stage, no byes, gender from the partners', () => {
+    const tab = v7DoublesTab({ teams: teams(5), mode: 2 }).map((r) => (r ?? []).slice(0, 6));
+    tab.push([null, null, ' / ', null, null, false]); // the team formula with both players blank
+    const t = doubles(tab);
+    const ev = t.events[0];
+    expect(ev).toMatchObject({ id: 'open-doubles', knockoutOnly: true, teams: true, byes: [], groups: [], brackets: [] });
+    expect(ev.roster.map((r) => r.name)).toEqual(teams(5).map((x) => `${x.p1} / ${x.p2}`));
+    // No Gender column on the doubles tab: column C is the team name, not a gender.
+    expect(ev.roster[0]).toEqual({ name: 'Lehmann Matthew / ZHANG Tian-Terry', province: 'MB', gender: '', rating: 4000, bye: false });
+    expect(t.players['Lehmann Matthew / ZHANG Tian-Terry']).toMatchObject({ rating: 4000, gender: 'M', province: 'MB', listRank: null });
+    expect(t.warnings).toEqual([]);
+  });
+
+  it('reads Bracket A and the Bracket B that A losers drop into, before any result', () => {
+    const t = doubles(v7DoublesTab({ teams: teams(9), mode: 2 }));
+    const [A, B, ...rest] = t.events[0].brackets;
+    expect(rest).toEqual([]);
+    expect(A).toMatchObject({ id: 'A', label: 'Championship', format: 'knockout', size: 16, players: 9, champion: null });
+    expect(A.fromBracket).toBeUndefined();
+    expect(A.rounds.map((r) => [r.name, r.short])).toEqual([['Round of 16', 'R16'], ['Quarterfinals', 'QF'], ['Semifinals', 'SF'], ['Final', 'Final']]);
+    expect(names(A).sort()).toEqual(teams(9).map((x) => `${x.p1} / ${x.p2}`).sort());
+    // Byes go to the top seeds: the top team waits for the winner of the only real first-round match.
+    expect(A.rounds[0].matches[0]).toMatchObject({ a: { name: 'Lehmann Matthew / ZHANG Tian-Terry' }, b: { bye: true } });
+    expect(A.thirdPlace).toMatchObject({ a: { name: null, bye: false }, b: { name: null, bye: false }, winner: null });
+    // "BRACKET B (up to 5 Teams / 8-Team Bracket)": five slots fill in from A, three are byes.
+    expect(B).toMatchObject({ id: 'B', label: 'Consolation', fromBracket: 'A', size: 8, players: 5, champion: null });
+    const slots = B.rounds[0].matches.flatMap((m) => [m.a, m.b]);
+    expect(slots.filter((s) => s.bye).length).toBe(3);
+    expect(slots.filter((s) => !s.bye && !s.name).length).toBe(5);
+    expect(B.thirdPlace).toBeDefined();
+    expect(t.warnings).toEqual([]);
+  });
+
+  it('fills Bracket B as A is played: first-match losers drop, a bye team that wins its first match leaves a BYE', () => {
+    const t = doubles(v7DoublesTab({ teams: teams(9), mode: 2, score: higherRatedWins({ A: 2 }) }));
+    const [A, B] = t.events[0].brackets;
+    expect(names(B).sort()).toEqual(firstLosses(A));
+    expect(names(B)).not.toContain('Lehmann Matthew / ZHANG Tian-Terry');
+    // The top team won its first match after the bye, so its B slot turned into a BYE: four teams left.
+    expect(B.players).toBe(4);
+    expect(B.rounds[0].matches.every((m) => m.a.bye || m.b.bye)).toBe(true);
+
+    // Same draw, but the top team loses its first match: it drops to B.
+    const u = doubles(v7DoublesTab({ teams: teams(9), mode: 2, score: higherRatedWins({ A: 2 }, ['A:1:0']) }));
+    const [A2, B2] = u.events[0].brackets;
+    expect(names(B2).sort()).toEqual(firstLosses(A2));
+    expect(names(B2)).toContain('Lehmann Matthew / ZHANG Tian-Terry');
+    expect(B2.players).toBe(5);
+  });
+
+  it('reads three brackets: round-1 losers drop to C, round-2 losers to B', () => {
+    const t = doubles(v7DoublesTab({ teams: teams(12), mode: 3, score: higherRatedWins({ A: 2 }) }));
+    const [A, B, C] = t.events[0].brackets;
+    expect([A, B, C].map((b) => [b.id, b.label, b.fromBracket ?? null, b.size, b.players])).toEqual([
+      ['A', 'Championship', null, 16, 12],
+      ['B', 'Consolation', 'A', 4, 4],
+      ['C', 'Division C', 'A', 4, 4],
+    ]);
+    expect(names(C).sort()).toEqual(lostIn(A, 0));
+    expect(names(B).sort()).toEqual(lostIn(A, 1));
+    expect(t.warnings).toEqual([]);
+  });
+
+  it('reads the champions and the play-off 3/4 once the event is complete', () => {
+    const t = doubles(v7DoublesTab({ teams: teams(6), mode: 2, score: higherRatedWins() }));
+    const [A, B] = t.events[0].brackets;
+    expect(A.champion).toBe('Lehmann Matthew / ZHANG Tian-Terry');
+    expect(A.thirdPlace?.winner).toBe('Lu Yi Fan / Tran Jeremy');
+    // Both bye teams won their first match, so only the two first-round losers dropped: a final, no play-off.
+    expect(B.players).toBe(2);
+    expect(B.thirdPlace).toBeUndefined();
+    expect(B.champion).toBe(names(B).sort((x, y) => t.players[y].rating! - t.players[x].rating!)[0]);
+  });
+
+  it('reads a doubles tab with a team still half entered as doubles', () => {
+    const tab = v7DoublesTab({ teams: teams(4), mode: 2 }).map((r) => (r ?? []).slice(0, 6));
+    tab.push(['Joyal Didie', null, 'Joyal Didie', 'MB', 1200, false]);
+    const ev = doubles(tab).events[0];
+    expect(ev).toMatchObject({ knockoutOnly: true, teams: true });
+  });
+
+  it('reads the "up to" count of a feeder bracket, also when three brackets were asked for but C had too few teams', () => {
+    // 9 teams, three brackets: only one first-round match, so no C; B takes the four round-2 losers.
+    const [A, B, C] = doubles(v7DoublesTab({ teams: teams(9), mode: 3 })).events[0].brackets;
+    expect(C).toBeUndefined();
+    expect([A.size, B.upTo, B.players]).toEqual([16, 4, 4]);
+    expect(doubles(v7DoublesTab({ teams: teams(9), mode: 2 })).events[0].brackets[1].upTo).toBe(5);
+  });
+
+  it('keeps group-stage byes for doubles played with a group stage, and reads a doubles tab with a half-entered team', () => {
+    // The older way: teams written "Name / Name" in a singles-style tab, with a group draw and a bye.
+    const g = v5Tab();
+    g[1][0] = 'Bekele Biruk / Oyewo BJ';
+    g[1][4] = true;
+    const ev = build({ title: 'x', sheets: { Canada_Rankings: rankings, Club_Doubles: g } }).events[0];
+    expect(ev.knockoutOnly).toBe(false);
+    expect(ev.byes).toEqual(['Bekele Biruk / Oyewo BJ']);
+
+    const tab: Grid = [
+      ['Name', 'Province', 'Gender', 'Rating', 'Group_Stage_Bye'],
+      ['Lehmann Matthew / ZHANG Tian-Terry', 'MB', null, 5369, false],
+      ['Joyal Didie', 'MB', null, 1200, false],
+    ];
+    expect(doubles(tab).events[0]).toMatchObject({ knockoutOnly: true, teams: true });
+    // On a tab not named for doubles, one team among single names isn't enough.
+    expect(build({ title: 'x', sheets: { Canada_Rankings: rankings, Novice: tab } }).events[0]).toMatchObject({ knockoutOnly: false, teams: false });
+  });
+
+  it('still reads ratings from column D when its header is not "Rating", like Tournament Tools', () => {
+    const wb = clone(wb1009);
+    wb.sheets['Beginners'][0][3] = 'Rtg';
+    const beg = build(wb).events.find((e) => e.id === 'beginners')!;
+    expect(beg.roster[0]).toMatchObject({ name: 'Dupuis Felix', rating: 126 });
+  });
+
+  it('gives the same tournament through the CSV export', () => {
+    const wb: Workbook = { title: 'x', sheets: { Canada_Rankings: rankings, Open_Doubles: v7DoublesTab({ teams: teams(12), mode: 3, score: higherRatedWins({ A: 3, B: 1, C: 2 }, ['A:0:1']) }) } };
     expect(build(viaCsv(wb)).events).toEqual(build(wb).events);
   });
 });

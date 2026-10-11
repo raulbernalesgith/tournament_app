@@ -9,9 +9,9 @@ export interface Env extends SheetEnv {
 }
 
 // Bump when the JSON shape changes, so a new deploy never serves data cached by the old one.
-const KEY = 'tournament:v3';
+const KEY = 'tournament:v4';
 // The previous version's data, served only if the first sync after a deploy fails.
-const PREVIOUS_KEY = 'tournament:v2';
+const PREVIOUS_KEY = 'tournament:v3';
 const MEMO_MS = 15_000;
 
 const DRAW_REASON: Record<EventData['drawBy'], string> = {
@@ -23,6 +23,7 @@ const DRAW_REASON: Record<EventData['drawBy'], string> = {
 
 /** How /api/health describes an event's group draw. */
 function describeDraw(e: EventData): string {
+  if (e.knockoutOnly) return 'no group stage, straight to the knockout';
   if (!e.groups.length) return 'not drawn yet';
   const name = e.drawName ? `${e.drawName} draw` : 'group draw (type not written on the sheet)';
   return `${name}, ${DRAW_REASON[e.drawBy] ?? 'previous version'}`;
@@ -156,7 +157,7 @@ export default {
           players: e.roster.length,
           groupDraw: describeDraw(e),
           groups: e.groups.length,
-          brackets: e.brackets.map((b) => `${b.id} ${b.format}`),
+          brackets: e.brackets.map((b) => `${b.id} ${b.format}${b.fromBracket ? `, losers from ${b.fromBracket}` : ''}`),
         })),
         warnings: t.warnings,
         lastError,
