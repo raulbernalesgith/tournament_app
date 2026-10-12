@@ -53,7 +53,12 @@ interface Ui {
   g: string;
 }
 
-const POLL_MS = 30_000;
+/**
+ * How often an open page checks for new results, only while it's on screen (and right away when the
+ * viewer comes back to it). The sync saves at most every 2 minutes, so a minute loses nothing, and it
+ * keeps a busy tournament day well inside the Workers Free plan's 100,000 requests a day.
+ */
+const POLL_MS = 60_000;
 
 /* ------------------------------------------------------------------ */
 /* Small hooks                                                         */

@@ -4,7 +4,7 @@ Live groups and knockout brackets for the table tennis tournament, synced from a
 
 - **Phone:** overview, groups, knockout rounds (A/B/C/D brackets appear automatically from the sheet), players and player profiles.
 - **Desktop:** full bracket tree. Click any name to trace that player's path.
-- **Updates:** results refresh every minute from the sheet. Links are shareable (event, view, bracket and player are kept in the URL). Light and dark modes are both included.
+- **Updates:** the sheet is checked every minute, and an open page looks for new results every minute while it's on screen (and right away when you come back to it), so a change shows within about 2–3 minutes. Links are shareable (event, view, bracket and player are kept in the URL). Light and dark modes are both included.
 
 ## How it works
 
