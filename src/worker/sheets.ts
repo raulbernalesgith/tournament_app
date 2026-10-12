@@ -1,5 +1,4 @@
 import type { Cell, Grid, Workbook } from '../shared/types';
-import { parseCsv } from './csv';
 
 export interface SheetEnv {
   SHEET_ID?: string;
@@ -107,50 +106,82 @@ export function tabsFromHtml(html: string): { title: string; gid: string }[] {
   return [...found.entries()].map(([title, gid]) => ({ title, gid }));
 }
 
-/** Lists every tab of a link-shared sheet, so new event tabs are picked up without config changes. */
-export async function discoverTabs(sheetId: string): Promise<{ title: string; gid: string }[]> {
-  const res = await fetch(`https://docs.google.com/spreadsheets/d/${encodeURIComponent(sheetId)}/htmlview`, { redirect: 'follow' });
-  if (!res.ok) throw new Error(`Sheet tab list failed: ${res.status}`);
-  return tabsFromHtml(await res.text());
+export interface TabRef {
+  title: string;
+  gid: string;
 }
+
+const TAB_BUTTON = /<li[^>]*id="sheet-button-(\d+)"[^>]*>\s*<a[^>]*>([^<]+)<\/a>/g;
+/** Text kept from one piece of the page to the next, so a match split between pieces is still found. */
+const CARRY = 4096;
+/** How much of the page to scan piece by piece for the tab menu before reading the rest in one go. */
+const HEAD_BYTES = 64 * 1024;
 
 /**
- * Reads tabs through the public CSV export (sheet must be shared "anyone with the link").
- * Tabs are discovered from the sheet itself, plus any listed in SHEET_TABS.
+ * Lists every tab of a link-shared sheet, so new event tabs are picked up
+ * without config changes. The HTML view renders every tab's cells, so it can
+ * be megabytes. Its start is scanned as it arrives, and the page is dropped as
+ * soon as the tab menu has closed (a </ul> after the last tab button). If the
+ * menu isn't in the first 64 KB, the rest is read in one go (piece-by-piece
+ * reading costs more CPU in Workers than one native read).
  */
-export async function fetchViaCsv(sheetId: string, tabsSpec?: string): Promise<Workbook> {
-  // Discover every tab so new event tabs show up on their own; SHEET_TABS fills any gaps.
-  let tabs: { title: string; gid: string }[] = [];
-  try {
-    tabs = await discoverTabs(sheetId);
-  } catch {
-    tabs = [];
+export async function discoverTabs(sheetId: string): Promise<TabRef[]> {
+  const res = await fetch(`https://docs.google.com/spreadsheets/d/${encodeURIComponent(sheetId)}/htmlview`, { redirect: 'follow' });
+  if (!res.ok) {
+    await res.body?.cancel();
+    throw new Error(`Sheet tab list failed: ${res.status}`);
   }
-  const known = new Set(tabs.map((t) => t.gid));
-  for (const t of tabsSpec ? parseTabs(tabsSpec) : []) if (!known.has(t.gid)) tabs.push(t);
-  if (!tabs.length) throw new Error('Could not find the sheet tabs; set SHEET_TABS to "tab=gid" pairs');
-  const id = encodeURIComponent(sheetId);
-  const grids = await Promise.all(
-    tabs.map(async (t) => {
-      const res = await fetch(`https://docs.google.com/spreadsheets/d/${id}/export?format=csv&gid=${t.gid}`, {
-        redirect: 'follow',
-      });
-      if (!res.ok) throw new Error(`CSV export for "${t.title}" failed: ${res.status}`);
-      const type = res.headers.get('content-type') ?? '';
-      if (type.includes('text/html')) throw new Error(`CSV export for "${t.title}" returned a sign-in page; share the sheet with "anyone with the link"`);
-      return parseCsv(await res.text());
-    }),
-  );
-  const sheets: Record<string, Grid> = {};
-  tabs.forEach((t, i) => {
-    sheets[t.title] = grids[i];
-  });
-  return { title: 'Google Sheet', sheets };
+  if (!res.body) return tabsFromHtml(await res.text());
+  const [head, whole] = res.body.tee();
+  const reader = head.getReader();
+  const decoder = new TextDecoder();
+  const menu = new Map<string, string>();
+  let carry = '';
+  let seen = 0;
+  while (seen < HEAD_BYTES) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    seen += value.length;
+    const text = carry + decoder.decode(value, { stream: true });
+    if (text.includes('sheet-button-')) {
+      for (const m of text.matchAll(TAB_BUTTON)) {
+        const t = decode(m[2]);
+        if (t && !menu.has(t)) menu.set(t, m[1]);
+      }
+    }
+    if (menu.size && text.lastIndexOf('</ul>') > text.lastIndexOf('sheet-button-')) {
+      await Promise.all([reader.cancel(), whole.cancel()]);
+      return [...menu.entries()].map(([title, gid]) => ({ title, gid }));
+    }
+    carry = text.slice(-CARRY);
+  }
+  // Cancelling one branch of a tee settles only once the other is done too, so don't wait for it here.
+  void reader.cancel().catch(() => {});
+  return tabsFromHtml(await new Response(whole).text());
 }
 
-export async function fetchWorkbook(env: SheetEnv): Promise<{ wb: Workbook; mode: Exclude<SheetMode, 'none'> }> {
-  const mode = sheetMode(env);
-  if (mode === 'sheets-api') return { wb: await fetchViaApi(env.SHEET_ID!, env.GOOGLE_API_KEY!), mode };
-  if (mode === 'sheets-csv') return { wb: await fetchViaCsv(env.SHEET_ID!, env.SHEET_TABS), mode };
-  throw new Error('Google Sheet is not configured (set SHEET_ID)');
+export type TabDownload = { ok: true; bytes: Uint8Array } | { ok: false; status: number; message: string };
+
+/** One tab through the public CSV export, as raw bytes (decoded only if the sheet changed). */
+export async function downloadTab(sheetId: string, tab: TabRef): Promise<TabDownload> {
+  const url = `https://docs.google.com/spreadsheets/d/${encodeURIComponent(sheetId)}/export?format=csv&gid=${encodeURIComponent(tab.gid)}`;
+  let res: Response;
+  try {
+    res = await fetch(url, { redirect: 'follow' });
+  } catch (err) {
+    return { ok: false, status: 0, message: `CSV export for "${tab.title}" failed: ${err instanceof Error ? err.message : String(err)}` };
+  }
+  if (!res.ok) {
+    await res.body?.cancel();
+    return { ok: false, status: res.status, message: `CSV export for "${tab.title}" failed: ${res.status}` };
+  }
+  if ((res.headers.get('content-type') ?? '').includes('text/html')) {
+    await res.body?.cancel();
+    return { ok: false, status: res.status, message: `CSV export for "${tab.title}" returned a sign-in page; share the sheet with "anyone with the link"` };
+  }
+  try {
+    return { ok: true, bytes: new Uint8Array(await res.arrayBuffer()) };
+  } catch (err) {
+    return { ok: false, status: 0, message: `CSV export for "${tab.title}" was cut off: ${err instanceof Error ? err.message : String(err)}` };
+  }
 }

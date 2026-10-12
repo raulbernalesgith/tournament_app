@@ -9,7 +9,7 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "test": "vitest run",
-    "typecheck": "tsc -p tsconfig.json && tsc -p src/app/tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json && tsc -p src/app/tsconfig.json && tsc -p tsconfig.test.json",
     "snapshot": "python3 scripts/xlsx_to_grids.py"
   },
   "dependencies": {

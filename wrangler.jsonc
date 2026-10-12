@@ -17,7 +17,8 @@
     "run_worker_first": ["/api/*"]
   },
 
-  // Latest parsed tournament JSON. Written only when the sheet content changes.
+  // The sheet's tabs as last downloaded (written only when they change, at most every 2 minutes),
+  // the tab list, and the sync status. The app builds groups and brackets in the browser.
   "kv_namespaces": [
     {
       "binding": "CACHE",
@@ -25,9 +26,10 @@
     }
   ],
 
-  // Pull the Google Sheet once a minute.
+  // Download the sheet's tabs once a minute; re-read the tab list (new event tabs) every 10 minutes.
+  // The second cron must match DISCOVER_CRON in src/worker/index.ts.
   "triggers": {
-    "crons": ["* * * * *"]
+    "crons": ["* * * * *", "*/10 * * * *"]
   },
 
   "observability": {

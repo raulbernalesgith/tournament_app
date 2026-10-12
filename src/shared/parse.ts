@@ -55,9 +55,10 @@ const notNumber = (v: Cell): v is string => typeof v === 'string' && v.trim() !=
 
 const pad = (n: number | string) => String(n).padStart(2, '0');
 
-/** Accepts spreadsheet serial numbers, ISO dates and M/D/YYYY strings. */
+/** Accepts spreadsheet serial numbers (also as text, from a cell formatted as a number), ISO dates and M/D/YYYY strings. */
 export function isoDate(v: Cell): string | null {
   if (v == null || typeof v === 'boolean') return null;
+  if (typeof v === 'string' && /^\d{5}(\.\d+)?$/.test(v.trim())) v = Number(v.trim());
   if (typeof v === 'number') {
     if (v < 1 || v > 200000) return null;
     const d = new Date(Math.round((v - 25569) * 86400000));
@@ -70,8 +71,9 @@ export function isoDate(v: Cell): string | null {
   if (m) return `${m[3]}-${pad(m[1])}-${pad(m[2])}`;
   const t = Date.parse(s);
   if (Number.isNaN(t)) return null;
+  // Other text ("Jan 31, 2026") is read as a local date, so read it back in local time: the same day in every time zone.
   const d = new Date(t);
-  return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`;
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
 /**
@@ -972,16 +974,21 @@ export function buildTournament(
 
   for (const [tab, grid] of Object.entries(wb.sheets)) {
     if (!grid || grid.length === 0) continue;
-    if (isRankingsTab(grid)) {
-      if (rankCount === 0) {
-        const r = parseRankings(grid);
-        players = r.players;
-        rankCount = r.count;
+    // A tab the parser trips over is left out with a warning, so the other events still show.
+    try {
+      if (isRankingsTab(grid)) {
+        if (rankCount === 0) {
+          const r = parseRankings(grid);
+          players = r.players;
+          rankCount = r.count;
+        }
+        continue;
       }
-      continue;
+      const ev = parseEvent(tab, grid, warn);
+      if (ev) events.push(ev);
+    } catch (err) {
+      warn(`${tab}: couldn't be read (${err instanceof Error ? err.message : String(err)})`);
     }
-    const ev = parseEvent(tab, grid, warn);
-    if (ev) events.push(ev);
   }
 
   // Players that are in an event but not on the ranking list still get a profile.

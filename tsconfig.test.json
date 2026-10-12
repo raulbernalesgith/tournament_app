@@ -1,0 +1,6 @@
+{
+  // Type-checks the tests (vitest runs them without checking types).
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "resolveJsonModule": true, "noEmit": true },
+  "include": ["test/**/*.ts", "src/shared/**/*.ts", "src/worker/**/*.ts", "src/app/model.ts"]
+}

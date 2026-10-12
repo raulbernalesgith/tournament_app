@@ -5,7 +5,7 @@ import wb1009 from './fixtures/workbook-2026-10-09.grids.json';
 import snapshot from '../src/data/snapshot.grids.json';
 import { buildTournament, fingerprint, ittfOrder, parseSets } from '../src/shared/parse';
 import type { Bracket, Cell, Grid, GroupMatch, GroupPlayer, Workbook } from '../src/shared/types';
-import { parseCsv } from '../src/worker/csv';
+import { parseCsv } from '../src/shared/csv';
 import { parseTabs, tabsFromHtml } from '../src/worker/sheets';
 import { put as putAt, v5Tab } from './v5';
 import { higherRatedWins, teams, v7DoublesTab } from './v7';
@@ -447,6 +447,18 @@ describe('event tabs', () => {
     ];
     const t = build({ title: 'x', sheets: { Canada_Rankings: rankings, Novice: singles } });
     expect(t.warnings).toEqual(['Novice: "Doe & Sons" is not on the ranking list']);
+  });
+
+  it('leaves out a tab it cannot read, with a warning, and still shows the others', () => {
+    const boom = new Proxy([['Name', 'Province', 'Gender', 'Rating', 'Group_Stage_Bye'], ['X', 'MB', 'M', 1, false]] as Grid, {
+      get(target, key) {
+        if (key === '1') throw new Error('bad cell');
+        return Reflect.get(target, key);
+      },
+    });
+    const t = build({ title: 'x', sheets: { Canada_Rankings: rankings, Broken: boom, Club_Open: v5Tab() } });
+    expect(t.events.map((e) => e.id)).toEqual(['club-open']);
+    expect(t.warnings).toEqual(['Broken: couldn\'t be read (bad cell)']);
   });
 
   it('does not take other tabs that list names for events', () => {

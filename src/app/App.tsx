@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
+import { isBundle, tournamentOf } from '../shared/bundle';
+import { fingerprint } from '../shared/parse';
 import type { Bracket, EventData, GroupMatch, Match, Tournament } from '../shared/types';
 import { Icon } from './icons';
 import {
@@ -125,6 +127,7 @@ export function App() {
   const [menuOpen, setMenuOpen] = useState(false);
   const desk = useMedia('(min-width: 900px)');
   const etag = useRef('');
+  const shown = useRef('');
 
   const setUi = (patch: Partial<Ui>) =>
     setUiState((prev) => {
@@ -144,20 +147,27 @@ export function App() {
     let first = true;
     const load = async () => {
       try {
-        const res = await fetch('/api/tournament', { headers: etag.current ? { 'if-none-match': etag.current } : {} });
+        const res = await fetch('/api/sheet', { headers: etag.current ? { 'if-none-match': etag.current } : {} });
         if (res.status === 304) return;
         if (!res.ok) throw new Error(String(res.status));
-        const json = (await res.json()) as Tournament;
+        const body = (await res.json()) as unknown;
+        // The server sends the sheet's tabs as downloaded; groups and brackets are built here.
+        const t = isBundle(body) ? tournamentOf(body) : (body as Tournament);
         if (!alive) return;
         etag.current = res.headers.get('etag') ?? '';
-        setData(json);
+        // An edit the app doesn't show (a note, a column it doesn't read) changes nothing on screen.
+        const fp = fingerprint(t);
+        if (!first && fp === shown.current) return;
+        shown.current = fp;
+        setData(t);
         setFailed(false);
         if (!first) {
           setToast('Results updated');
           window.setTimeout(() => setToast(''), 2600);
         }
         first = false;
-      } catch {
+      } catch (err) {
+        console.error('Could not load the tournament', err);
         if (alive && first) setFailed(true);
       }
     };

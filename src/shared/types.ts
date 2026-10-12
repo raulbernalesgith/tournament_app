@@ -11,6 +11,27 @@ export interface Workbook {
 
 export type SourceKind = 'sheets-api' | 'sheets-csv' | 'snapshot';
 
+/** One tab as the Worker downloads it: the CSV export's text, or the cell grid (Sheets API, bundled snapshot). */
+export interface SheetTab {
+  title: string;
+  gid?: string;
+  csv?: string;
+  grid?: Grid;
+}
+
+/**
+ * What /api/sheet serves: the sheet's tabs as downloaded. The app turns them
+ * into a Tournament in the browser, so the Worker's once-a-minute sync stays
+ * well inside the free plan's CPU limit.
+ */
+export interface SheetBundle {
+  version: 1;
+  source: { kind: SourceKind; label: string };
+  /** When the sync last saw the sheet's content change (ISO). */
+  changedAt: string;
+  tabs: SheetTab[];
+}
+
 export interface Tournament {
   version: 1;
   /** When this JSON was produced from the sheet. */
